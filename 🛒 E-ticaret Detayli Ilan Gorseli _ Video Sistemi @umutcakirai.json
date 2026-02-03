@@ -1,0 +1,897 @@
+{
+  "name": "🛒 E-ticaret Detayli Ilan Gorseli / Video Sistemi @umutcakirai",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "🛒 Ürün Görseli Oluşturucu",
+        "formDescription": "E-ticaret ürün URL'nizi girin, AI otomatik olarak profesyonel ürün görselleri ve videosu oluşturacak.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Ürün URL'si",
+              "placeholder": "https://www.bose.com/p/headphones/bose-quietcomfort-ultra-headphones-2nd-gen/QCUH2-HEADPHONEARN.html",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        320,
+        -64
+      ],
+      "id": "d78911fc-b149-4a1f-9502-cdd467f7213d",
+      "name": "Ürün Formu",
+      "webhookId": "be18dc84-8c7c-4b7c-bce0-9a991a6f326e"
+    },
+    {
+      "parameters": {
+        "operation": "scrape",
+        "url": "={{ $json['Ürün URL\\'si'] }}",
+        "scrapeOptions": {
+          "options": {
+            "formats": {
+              "format": [
+                {
+                  "type": "json",
+                  "prompt": "Please extract the absolute URL of the main product image that is on this product listing e-commerce page.",
+                  "schema": "{\n  \"type\": \"string\",\n  \"description\": \"The main product image url extracted from this ecommerce product page.\"\n}"
+                }
+              ]
+            },
+            "headers": {}
+          }
+        },
+        "requestOptions": {}
+      },
+      "type": "@mendable/n8n-nodes-firecrawl.firecrawl",
+      "typeVersion": 1,
+      "position": [
+        608,
+        -64
+      ],
+      "id": "0f00b06c-2a92-4dad-8377-83bc6329e1b2",
+      "name": "Sayfa Scrape",
+      "credentials": {
+        "firecrawlApi": {
+          "id": "2UIiZkI5vDgxYgVy",
+          "name": "Firecrawl account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.data.json }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        848,
+        -64
+      ],
+      "id": "eeea69e7-e746-4f77-b633-4afa5766d5b5",
+      "name": "Görsel İndir"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"parts\": [\n      { \"text\": {{ JSON.stringify($json.prompt) }} },\n      {\n        \"inline_data\": {\n          \"mime_type\": \"image/png\",\n          \"data\": \"{{ $node['Canvas Sonucu'].json.result }}\"\n        }\n      }\n    ]\n  }],\n  \"generationConfig\": {\n    \"imageConfig\": {\n      \"aspectRatio\": \"16:9\",\n      \"imageSize\": \"2K\"\n    }\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1344,
+        192
+      ],
+      "id": "7364a3c6-d03c-4e8c-99ac-7cfc01b65619",
+      "name": "Ürün Görseli Oluştur",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ZhTHkQvnD86mk25x",
+          "name": "WIRO"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "binaryToPropery",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        1088,
+        -64
+      ],
+      "id": "3871f771-fec8-4efb-8c4b-ef4c8fd9ef60",
+      "name": "Base64 Dönüştür"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node - 2x2 Grid Bölümleme Promptları\n// Yazar: @umutcakirai\n\nconst sections = [\n  {\n    promptIndex: 1,\n    position: \"sol-üst\",\n    prompt: `KRİTİK GÖREV: SADECE BİR KADRANI KIRP VE YAKLAŞTIR.\n\nGiriş görseli, 2x2 ızgara şeklinde dizilmiş 4 ayrı ürün fotoğrafı içeren bir kolajtır. Bu fotoğraflardan sadece BİRİNİ İZOLE EDİP ÇIKARIN.\n\nHEDEF: SOL-ÜST KADRAN\n- Bu, SOL-ÜST köşedeki görseldir (dikey %0-50, yatay %0-50)\n- Belirli bir yöne bakan kulaklıkları gösterir\n\nYAPILACAKLAR:\n1. Sağ-üst, sol-alt ve sağ-alt fotoğrafları tamamen GÖRMEZDEN GELİN\n2. Sadece toplam görsel alanının sol-üst %25'ini KIRPIN\n3. Bu kırpılmış bölümü tüm çıkış tuvalinizi dolduracak şekilde YAKLAŞTIRIN/BÜYÜTÜN\n4. Son çıktı, kolaj değil, bağımsız bir ürün fotoğrafı gibi görünmelidir\n\nYASAK:\n❌ 4 görselin tamamını ÇIKARTMAYIN\n❌ Izgara veya kolaj ÇIKARTMAYIN\n❌ Ayırıcı çizgiler GÖSTERMEYİN\n❌ Diğer 3 ürün fotoğrafının herhangi bir parçasını DAHİL ETMEYİN\n\nGEREKLİ:\n✅ Tam olarak BİR ürün fotoğrafı çıkartın\n✅ Ürün tüm çerçeveyi doldurmalı\n✅ Temiz arka plan, sadece tek ürün\n✅ Orijinalin kalitesi ve stiliyle eşleştirin`\n  },\n  {\n    promptIndex: 2,\n    position: \"sağ-üst\",\n    prompt: `KRİTİK GÖREV: SADECE BİR KADRANI KIRP VE YAKLAŞTIR.\n\nGiriş görseli, 2x2 ızgara şeklinde dizilmiş 4 ayrı ürün fotoğrafı içeren bir kolajtır. Bu fotoğraflardan sadece BİRİNİ İZOLE EDİP ÇIKARIN.\n\nHEDEF: SAĞ-ÜST KADRAN\n- Bu, SAĞ-ÜST köşedeki görseldir (dikey %0-50, yatay %50-100)\n- Belirli bir yöne bakan kulaklıkları gösterir\n\nYAPILACAKLAR:\n1. Sol-üst, sol-alt ve sağ-alt fotoğrafları tamamen GÖRMEZDEN GELİN\n2. Sadece toplam görsel alanının sağ-üst %25'ini KIRPIN\n3. Bu kırpılmış bölümü tüm çıkış tuvalinizi dolduracak şekilde YAKLAŞTIRIN/BÜYÜTÜN\n4. Son çıktı, kolaj değil, bağımsız bir ürün fotoğrafı gibi görünmelidir\n\nYASAK:\n❌ 4 görselin tamamını ÇIKARTMAYIN\n❌ Izgara veya kolaj ÇIKARTMAYIN\n❌ Ayırıcı çizgiler GÖSTERMEYİN\n❌ Diğer 3 ürün fotoğrafının herhangi bir parçasını DAHİL ETMEYİN\n\nGEREKLİ:\n✅ Tam olarak BİR ürün fotoğrafı çıkartın\n✅ Ürün tüm çerçeveyi doldurmalı\n✅ Temiz arka plan, sadece tek ürün\n✅ Orijinalin kalitesi ve stiliyle eşleştirin`\n  },\n  {\n    promptIndex: 3,\n    position: \"sol-alt\",\n    prompt: `KRİTİK GÖREV: SADECE BİR KADRANI KIRP VE YAKLAŞTIR.\n\nGiriş görseli, 2x2 ızgara şeklinde dizilmiş 4 ayrı ürün fotoğrafı içeren bir kolajtır. Bu fotoğraflardan sadece BİRİNİ İZOLE EDİP ÇIKARIN.\n\nHEDEF: SOL-ALT KADRAN\n- Bu, SOL-ALT köşedeki görseldir (dikey %50-100, yatay %0-50)\n- Belirli bir yöne bakan kulaklıkları gösterir\n\nYAPILACAKLAR:\n1. Sol-üst, sağ-üst ve sağ-alt fotoğrafları tamamen GÖRMEZDEN GELİN\n2. Sadece toplam görsel alanının sol-alt %25'ini KIRPIN\n3. Bu kırpılmış bölümü tüm çıkış tuvalinizi dolduracak şekilde YAKLAŞTIRIN/BÜYÜTÜN\n4. Son çıktı, kolaj değil, bağımsız bir ürün fotoğrafı gibi görünmelidir\n\nYASAK:\n❌ 4 görselin tamamını ÇIKARTMAYIN\n❌ Izgara veya kolaj ÇIKARTMAYIN\n❌ Ayırıcı çizgiler GÖSTERMEYİN\n❌ Diğer 3 ürün fotoğrafının herhangi bir parçasını DAHİL ETMEYİN\n\nGEREKLİ:\n✅ Tam olarak BİR ürün fotoğrafı çıkartın\n✅ Ürün tüm çerçeveyi doldurmalı\n✅ Temiz arka plan, sadece tek ürün\n✅ Orijinalin kalitesi ve stiliyle eşleştirin`\n  },\n  {\n    promptIndex: 4,\n    position: \"sağ-alt\",\n    prompt: `KRİTİK GÖREV: SADECE BİR KADRANI KIRP VE YAKLAŞTIR.\n\nGiriş görseli, 2x2 ızgara şeklinde dizilmiş 4 ayrı ürün fotoğrafı içeren bir kolajtır. Bu fotoğraflardan sadece BİRİNİ İZOLE EDİP ÇIKARIN.\n\nHEDEF: SAĞ-ALT KADRAN\n- Bu, SAĞ-ALT köşedeki görseldir (dikey %50-100, yatay %50-100)\n- Belirli bir yöne bakan kulaklıkları gösterir\n\nYAPILACAKLAR:\n1. Sol-üst, sağ-üst ve sol-alt fotoğrafları tamamen GÖRMEZDEN GELİN\n2. Sadece toplam görsel alanının sağ-alt %25'ini KIRPIN\n3. Bu kırpılmış bölümü tüm çıkış tuvalinizi dolduracak şekilde YAKLAŞTIRIN/BÜYÜTÜN\n4. Son çıktı, kolaj değil, bağımsız bir ürün fotoğrafı gibi görünmelidir\n\nYASAK:\n❌ 4 görselin tamamını ÇIKARTMAYIN\n❌ Izgara veya kolaj ÇIKARTMAYIN\n❌ Ayırıcı çizgiler GÖSTERMEYİN\n❌ Diğer 3 ürün fotoğrafının herhangi bir parçasını DAHİL ETMEYİN\n\nGEREKLİ:\n✅ Tam olarak BİR ürün fotoğrafı çıkartın\n✅ Ürün tüm çerçeveyi doldurmalı\n✅ Temiz arka plan, sadece tek ürün\n✅ Orijinalin kalitesi ve stiliyle eşleştirin`\n  }\n];\n\nreturn sections.map(item => ({\n  json: {\n    promptIndex: item.promptIndex,\n    position: item.position,\n    prompt: item.prompt\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        208
+      ],
+      "id": "4c4474cd-1829-4bfc-a177-b14ca1bdb3a3",
+      "name": "Prompt Oluştur"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        848,
+        208
+      ],
+      "id": "c2e0a392-950a-4d82-9f8e-eeeecf9ff935",
+      "name": "Döngü"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "480d6e40-1002-4e49-a8d4-66571f471f42",
+              "name": "=result",
+              "value": "={{ $json.candidates[0].content.parts.filter(item => item.inlineData).first().inlineData.data }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1584,
+        192
+      ],
+      "id": "938a2414-e74d-4202-a598-7bbb36c86431",
+      "name": "Görsel Sonucu"
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "result",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1824,
+        192
+      ],
+      "id": "87a5d776-99a9-480e-b1f0-aeeebdb641a6",
+      "name": "Binary Dönüştür"
+    },
+    {
+      "parameters": {
+        "name": "=Çıktı Görseli #{{ $runIndex + 1 }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "https://drive.google.com/drive/u/0/folders/1VeWtBNdebPqZkzECQIqYQ6Jm0nXJWRxD",
+          "mode": "url"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        2096,
+        192
+      ],
+      "id": "47745cb9-730c-47c2-ada4-3a0283f8dc16",
+      "name": "Drive Yükle",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "zJiObkge1m3O90lv",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "480d6e40-1002-4e49-a8d4-66571f471f42",
+              "name": "=result",
+              "value": "={{ $node['Görsel Sonucu'].json.result }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2368,
+        192
+      ],
+      "id": "2bee2658-060e-4cec-8a7c-94945773d308",
+      "name": "Final Sonucu"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "40b4fc6a-0963-4647-919f-da367632a912",
+              "name": "prompt",
+              "value": "Yüklenen ürün görselini alacaksınız. Aynı ürünün dört fotorealistik görselini oluşturun; şekil, oranlar, renkler, dokular, yansımalar ve etiket tasarımında mükemmel tutarlılığı koruyun. Sadece dönüş açısını değiştirin. Lütfen ürünümüzü e-ticaret ürün listeleme sayfasında en iyi şekilde sunacak dönüş açısını ve dönüş eksenini seçin. Her görselde ürünün doğru yönlendirildiğinden emin olun.\n\nSon oluşturulan görsel 2x2 ızgara üzerinde olacaktır.\n\nOluşturulacak açılar:\n1. Orijinal görünümden 90° dönüş\n2. Orijinal görünümden 180° dönüş\n3. Orijinal görünümden 270° dönüş\n4. 360° / orijinal yönelime tam dönüş (tutarlılık kontrolü için)\n\nKurallar:\n- Sadece döndürün; tasarımı değiştirmeyin.\n- Aydınlatma, gölgeler ve render stilini eşleştirin.\n- Temiz, nötr stüdyo arka planı.\n- Ürünü her karede ortalayın.\n- Fotorealistik çıktı.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1344,
+        -64
+      ],
+      "id": "5b8439f0-3840-4d9f-8f82-d576bc3a6daa",
+      "name": "Canvas Prompt"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"parts\": [\n      { \"text\": {{ JSON.stringify($json.prompt) }} },\n      {\n        \"inline_data\": {\n          \"mime_type\": \"image/png\",\n          \"data\": \"{{ $node['Base64 Dönüştür'].json.data }}\"\n        }\n      }\n    ]\n  }],\n  \"generationConfig\": {\n    \"imageConfig\": {\n      \"aspectRatio\": \"16:9\",\n      \"imageSize\": \"2K\"\n    }\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1584,
+        -64
+      ],
+      "id": "452af8d3-5fd9-4d7b-9db1-b67e3c6d7f3e",
+      "name": "Canvas Oluştur",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ZhTHkQvnD86mk25x",
+          "name": "WIRO"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "480d6e40-1002-4e49-a8d4-66571f471f42",
+              "name": "=result",
+              "value": "={{ $json.candidates[0].content.parts.filter(item => item.inlineData).first().inlineData.data }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1824,
+        -64
+      ],
+      "id": "84daed54-9828-42fe-8948-4acf35e19a89",
+      "name": "Canvas Sonucu"
+    },
+    {
+      "parameters": {
+        "name": "=Canvas",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "https://drive.google.com/drive/u/0/folders/1VeWtBNdebPqZkzECQIqYQ6Jm0nXJWRxD",
+          "mode": "url"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        2368,
+        -64
+      ],
+      "id": "713355dc-f42f-47c2-8390-8e92f68302be",
+      "name": "Canvas Yükle",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "zJiObkge1m3O90lv",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "result",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        2096,
+        -64
+      ],
+      "id": "e525c1c7-ec06-4693-983f-3a538b83d6a2",
+      "name": "Canvas Binary"
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        608,
+        512
+      ],
+      "id": "b9e6bb50-5f1f-46c8-bf4e-a6c6d8b37b29",
+      "name": "Topla"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"instances\": [\n    {\n      \"prompt\": {{ JSON.stringify($json.prompt) }},\n      \"referenceImages\": [\n        {\n          \"image\": {\n            \"bytesBase64Encoded\": \"{{ $node['Base64 Dönüştür'].json.data }}\",\n            \"mimeType\": \"image/png\"\n          },\n          \"referenceType\": \"asset\"\n        },\n        {\n          \"image\": {\n            \"bytesBase64Encoded\": \"{{ $node['Topla'].json.data[0].result }}\",\n            \"mimeType\": \"image/png\"\n          },\n          \"referenceType\": \"asset\"\n        },\n        {\n          \"image\": {\n            \"bytesBase64Encoded\": \"{{ $node['Topla'].json.data[1].result }}\",\n            \"mimeType\": \"image/png\"\n          },\n          \"referenceType\": \"asset\"\n        }\n      ]\n    }\n  ],\n  \"parameters\": {\n    \"durationSeconds\": 8,\n    \"personGeneration\": \"allow_adult\"\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1088,
+        512
+      ],
+      "id": "d5872f59-8109-4974-9e9b-70ef141c59ad",
+      "name": "Video Oluştur",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ZhTHkQvnD86mk25x",
+          "name": "WIRO"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "04b8a93f-1317-458d-9c8a-9d062a41f5ba",
+              "name": "prompt",
+              "value": "Sağlanan e-ticaret ürününün pürüzsüz, kesintisiz bir ürün tanıtım videosu oluşturun. Lütfen sağlanan referans görselindeki ürün boyutlarına ve işaretlere dikkat edin. Ölçekleme doğru olmalı, bu videoda gösterdiğimiz nesne gerçekte o nesnenin nasıl göründüğüyle eşleşmelidir. Hiperrealizmi doğru yapmanız çok önemli.\n\nVİDEO ÖZELLİKLERİ:\n- Süre: 4-6 saniye\n- Hareket: Sürekli pürüzsüz döndürme, saat yönünde\n- Hız: Yavaş, zarif döndürme, bir tam 360° dönüş tamamlayarak\n- Döngü: Son kare, mükemmel döngü için başlangıç karesine sorunsuz bağlanmalı\n\nÜRÜN VE KAMERA:\n- Ürün tüm döndürme boyunca mükemmel şekilde ortada kalır\n- Kamera tamamen sabit kalır - sadece ürün döner\n- Tutarlı mesafe ve çerçeveleme koruyun - yakınlaştırma veya kamera hareketi yok\n- Göz seviyesi perspektifi, düz açı\n\nAYDINLATMA VE ORTAM:\n- Saf beyaz arka plan (#FFFFFF), temiz stüdyo ortamı\n- Döndürme boyunca sabit kalan yumuşak, dengeli stüdyo aydınlatması\n- Derinlik ve gerçekçilik için ince yansımalar ve gölgeler\n- Döndürme sırasında sert gölge veya aydınlatma değişikliği yok\n\nKALİTE:\n- Referans görsellerle eşleşen fotorealistik render\n- Tüm ürün detaylarını koruyun\n- Takılma, atlama veya bozulma olmadan pürüzsüz hareket\n- Yüksek kaliteli e-ticaret ürün videosu kalitesi\n\nSES:\n- Tamamen sessiz\n- Çıktıda müzik yasak\n- Çıktıda ses efekti yasak\n\nREFERANS: Sağlanan görselleri ürünü farklı açılardan gösteren anahtar kareler olarak kullanın. Video, sürekli döndürme içinde tüm bu görünümler arasında pürüzsüz geçiş yapmalıdır.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        848,
+        512
+      ],
+      "id": "b2476834-9eed-46ee-a66e-33100994290e",
+      "name": "Video Prompt"
+    },
+    {
+      "parameters": {
+        "url": "=https://generativelanguage.googleapis.com/v1beta/{{ $json.name }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1584,
+        512
+      ],
+      "id": "dff8fda0-b58c-4e3a-9806-964031233983",
+      "name": "Durum Kontrol",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ZhTHkQvnD86mk25x",
+          "name": "WIRO"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 10
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1344,
+        512
+      ],
+      "id": "ecc3bc91-0d26-4bd9-87e8-e708f41a45d9",
+      "name": "Bekle",
+      "webhookId": "c68c0f13-ed52-4cc2-86f0-a795b67f6b31"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d978d0ad-9e4b-49ad-8992-40ab64744d1e",
+              "leftValue": "={{ $json.response }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "exists",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "e4af1378-f9fe-4d4c-9c46-5cb3a9a06f06",
+              "leftValue": "={{ $json.response.generateVideoResponse.generatedSamples }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1824,
+        512
+      ],
+      "id": "96b79121-60c0-46e8-be69-b7b2c475135c",
+      "name": "Hazır mı?"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.response.generateVideoResponse.generatedSamples[0].video.uri }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2096,
+        496
+      ],
+      "id": "98d1771b-c527-4be9-9c73-2c38a41e461f",
+      "name": "Video İndir",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ZhTHkQvnD86mk25x",
+          "name": "WIRO"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "=Çıktı Video",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "https://drive.google.com/drive/u/0/folders/1VeWtBNdebPqZkzECQIqYQ6Jm0nXJWRxD",
+          "mode": "url"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        2368,
+        496
+      ],
+      "id": "f07d0863-e680-42c3-abcd-ce2aa9805c12",
+      "name": "Video Yükle",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "zJiObkge1m3O90lv",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 🛒 E-ticaret Detayli Ilan Gorseli / Video Sistemi\n\n---\n\n### 📋 KURULUM NOTLARI\n\n#### 1️⃣ Gerekli API Kimlik Bilgileri\n\n**Firecrawl API:**\n- https://firecrawl.dev adresinden hesap oluşturun\n- API anahtarınızı alın\n- n8n'de \"Firecrawl\" credential oluşturun\n\n**Google Gemini API:**\n- https://aistudio.google.com adresinden API anahtarı alın\n- n8n'de \"Header Auth\" credential oluşturun:\n  - Header Name: `x-goog-api-key`\n  - Header Value: `[API_KEY]`\n\n**Google Drive OAuth2:**\n- Google Cloud Console'da OAuth2 kimlik bilgileri oluşturun\n- Drive API'yi etkinleştirin\n- n8n'de \"Google Drive OAuth2\" credential ayarlayın\n\n---\n\n#### 2️⃣ Google Drive Klasör Ayarı\n\n⚠️ **ÖNEMLİ:** Drive node'larındaki klasör URL'sini kendi klasörünüzle değiştirin!\n\nDeğiştirilecek node'lar:\n- \"Canvas Yükle\"\n- \"Drive Yükle\"\n- \"Video Yükle\"\n\n---\n\n**Sorularınız için:** @umutcakirai",
+        "height": 944,
+        "width": 384,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -160,
+        -160
+      ],
+      "typeVersion": 1,
+      "id": "6c5fd402-6633-4523-babc-275b43fc2f2f",
+      "name": "Kurulum Notları"
+    },
+    {
+      "parameters": {
+        "content": "## 🖼️ Görsel İşleme Hattı\n\nBu bölüm ürün görselini alır ve 4 farklı açıdan canvas oluşturur.",
+        "height": 228,
+        "width": 2252,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        288,
+        -160
+      ],
+      "typeVersion": 1,
+      "id": "7072efca-f26f-476e-8238-b336bbbf46b6",
+      "name": "Görsel Pipeline Notu"
+    },
+    {
+      "parameters": {
+        "content": "## ✂️ Kadran Ayırma Döngüsü\n\nHer bir kadranı (sol-üst, sağ-üst, sol-alt, sağ-alt) ayrı görseller olarak çıkarır.",
+        "height": 244,
+        "width": 2140,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        400,
+        96
+      ],
+      "typeVersion": 1,
+      "id": "a8de9fc0-dbc4-424e-a325-e94a588571ca",
+      "name": "Kadran Notu"
+    },
+    {
+      "parameters": {
+        "content": "## 📹 Video Oluşturma\n\nVeo 3.1 ile 360° dönen ürün videosu oluşturur. İşlem 2-5 dakika sürebilir.",
+        "height": 324,
+        "width": 2140,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        400,
+        400
+      ],
+      "typeVersion": 1,
+      "id": "6fe9b259-d270-4438-9e81-4eb6cb12ac35",
+      "name": "Video Notu"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Ürün Formu": {
+      "main": [
+        [
+          {
+            "node": "Sayfa Scrape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sayfa Scrape": {
+      "main": [
+        [
+          {
+            "node": "Görsel İndir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Görsel İndir": {
+      "main": [
+        [
+          {
+            "node": "Base64 Dönüştür",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Base64 Dönüştür": {
+      "main": [
+        [
+          {
+            "node": "Canvas Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ürün Görseli Oluştur": {
+      "main": [
+        [
+          {
+            "node": "Görsel Sonucu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt Oluştur": {
+      "main": [
+        [
+          {
+            "node": "Döngü",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Döngü": {
+      "main": [
+        [
+          {
+            "node": "Topla",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ürün Görseli Oluştur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Görsel Sonucu": {
+      "main": [
+        [
+          {
+            "node": "Binary Dönüştür",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Binary Dönüştür": {
+      "main": [
+        [
+          {
+            "node": "Drive Yükle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive Yükle": {
+      "main": [
+        [
+          {
+            "node": "Final Sonucu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final Sonucu": {
+      "main": [
+        [
+          {
+            "node": "Döngü",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Canvas Prompt": {
+      "main": [
+        [
+          {
+            "node": "Canvas Oluştur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Canvas Oluştur": {
+      "main": [
+        [
+          {
+            "node": "Canvas Sonucu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Canvas Sonucu": {
+      "main": [
+        [
+          {
+            "node": "Canvas Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Canvas Binary": {
+      "main": [
+        [
+          {
+            "node": "Canvas Yükle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Canvas Yükle": {
+      "main": [
+        [
+          {
+            "node": "Prompt Oluştur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Topla": {
+      "main": [
+        [
+          {
+            "node": "Video Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Video Prompt": {
+      "main": [
+        [
+          {
+            "node": "Video Oluştur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Durum Kontrol": {
+      "main": [
+        [
+          {
+            "node": "Hazır mı?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bekle": {
+      "main": [
+        [
+          {
+            "node": "Durum Kontrol",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hazır mı?": {
+      "main": [
+        [
+          {
+            "node": "Video İndir",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Bekle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Video İndir": {
+      "main": [
+        [
+          {
+            "node": "Video Yükle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Video Oluştur": {
+      "main": [
+        [
+          {
+            "node": "Bekle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "6213577f-626e-4896-907a-0c27face7486",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "96242dff5c24d0ef68c9c3613f57b8e78785db0c001bbdc899825523553eddfe"
+  },
+  "id": "PQs3eyPNpyFfjG54",
+  "tags": []
+}

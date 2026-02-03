@@ -1,0 +1,8 @@
+rembg
+opencv-python
+pillow
+numpy
+onnxruntime
+huggingface_hub
+requests
+transparent-background

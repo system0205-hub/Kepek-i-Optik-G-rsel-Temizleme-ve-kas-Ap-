@@ -1,0 +1,10 @@
+venv/
+venv_ai/
+__pycache__/
+*.pyc
+input/
+output/
+.DS_Store
+ikas_config.json
+*.exe
+*.spec
