@@ -3,21 +3,33 @@ from tkinter import ttk, filedialog, messagebox
 import threading
 import os
 import sys
+import time
+import io
 from pathlib import Path
 import json
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
+import requests
 
 # --- KONFİGÜRASYON VE SABİTLER ---
 CONFIG_FILE = "ikas_config.json"
 APP_TITLE = "Kepekçi Optik - Studio & İkas Manager"
 APP_SIZE = "1000x700"
-COLOR_BG = "#2b2b2b"
-COLOR_FG = "#ffffff"
-COLOR_ACCENT = "#007acc"
-COLOR_ACCENT_HOVER = "#0098ff"
-COLOR_SECONDARY = "#3c3c3c"
+
+# Modern Canlı Renk Paleti
+COLOR_BG = "#1a1a2e"           # Koyu lacivert arka plan
+COLOR_FG = "#eaeaea"           # Açık beyaz metin
+COLOR_ACCENT = "#00d4ff"       # Parlak cyan accent
+COLOR_ACCENT_HOVER = "#00ffea" # Hover için neon yeşil-mavi
+COLOR_SECONDARY = "#16213e"    # Koyu mavi sidebar
+COLOR_SUCCESS = "#00ff88"      # Yeşil başarı
+COLOR_WARNING = "#ffb800"      # Turuncu uyarı
+COLOR_ERROR = "#ff4757"        # Kırmızı hata
+COLOR_PURPLE = "#a855f7"       # Mor vurgu
+COLOR_GRADIENT_START = "#667eea"  # Gradient başlangıç
+COLOR_GRADIENT_END = "#764ba2"    # Gradient bitiş
+
 
 class ModernApp(tk.Tk):
     def __init__(self):
@@ -46,24 +58,27 @@ class ModernApp(tk.Tk):
         self.content_area = tk.Frame(self.main_container, bg=COLOR_BG)
         self.content_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=20, pady=20)
 
-        # Başlık
-        self.title_label = tk.Label(self.sidebar, text="KEPEKÇİ\nOPTİK", 
-                                    bg=COLOR_SECONDARY, fg=COLOR_FG, 
-                                    font=("Segoe UI", 16, "bold"), pady=20)
+        # Başlık - Gradient efektli görünüm
+        self.title_label = tk.Label(self.sidebar, text="✨ KEPEKÇİ\n   OPTİK", 
+                                    bg=COLOR_SECONDARY, fg=COLOR_ACCENT, 
+                                    font=("Segoe UI", 18, "bold"), pady=25)
         self.title_label.pack(fill=tk.X)
 
         # Menü Butonları
         self.btn_studio = self._create_sidebar_btn("📸 Stüdyo Modu", lambda: self.show_frame("studio"))
         self.btn_ikas = self._create_sidebar_btn("🚀 İkas Entegrasyon", lambda: self.show_frame("ikas"))
         self.btn_settings = self._create_sidebar_btn("⚙️ Ayarlar", lambda: self.show_frame("settings"))
+        self.btn_help = self._create_sidebar_btn("❓ Yardım", lambda: self.show_frame("help"))
 
-        # Alt Bilgi
-        self.version_label = tk.Label(self.sidebar, text="v1.0.0", bg=COLOR_SECONDARY, fg="#888888")
+        # Alt Bilgi - Nano-banana versiyon
+        self.version_label = tk.Label(self.sidebar, text="v2.0.0 🍌 Nano-Banana", 
+                                      bg=COLOR_SECONDARY, fg=COLOR_WARNING, 
+                                      font=("Segoe UI", 9))
         self.version_label.pack(side=tk.BOTTOM, pady=10)
 
         # Sayfalar
         self.frames = {}
-        for F in (StudioPage, IkasPage, SettingsPage):
+        for F in (StudioPage, IkasPage, SettingsPage, HelpPage):
             page_name = F.__name__
             frame = F(parent=self.content_area, controller=self)
             self.frames[page_name] = frame
@@ -106,9 +121,18 @@ class ModernApp(tk.Tk):
     def _create_sidebar_btn(self, text, command):
         btn = tk.Button(self.sidebar, text=text, command=command,
                         bg=COLOR_SECONDARY, fg=COLOR_FG, 
-                        bd=0, font=("Segoe UI", 11), anchor="w", padx=20, pady=10,
+                        bd=0, font=("Segoe UI", 11), anchor="w", padx=20, pady=12,
                         activebackground=COLOR_ACCENT, activeforeground=COLOR_FG, cursor="hand2")
         btn.pack(fill=tk.X, pady=2)
+        
+        # Hover efektleri
+        def on_enter(e):
+            btn.config(bg=COLOR_ACCENT, fg=COLOR_FG)
+        def on_leave(e):
+            btn.config(bg=COLOR_SECONDARY, fg=COLOR_FG)
+        
+        btn.bind("<Enter>", on_enter)
+        btn.bind("<Leave>", on_leave)
         return btn
 
     def show_frame(self, page_alias):
@@ -116,7 +140,8 @@ class ModernApp(tk.Tk):
         mapping = {
             "studio": "StudioPage",
             "ikas": "IkasPage",
-            "settings": "SettingsPage"
+            "settings": "SettingsPage",
+            "help": "HelpPage"
         }
         name = mapping.get(page_alias)
         if name:
@@ -136,6 +161,12 @@ class ModernApp(tk.Tk):
                 self.btn_studio.config(bg=COLOR_SECONDARY)
                 self.btn_ikas.config(bg=COLOR_SECONDARY)
                 self.btn_settings.config(bg=COLOR_ACCENT)
+                self.btn_help.config(bg=COLOR_SECONDARY)
+            elif page_alias == "help":
+                self.btn_studio.config(bg=COLOR_SECONDARY)
+                self.btn_ikas.config(bg=COLOR_SECONDARY)
+                self.btn_settings.config(bg=COLOR_SECONDARY)
+                self.btn_help.config(bg=COLOR_ACCENT)
 
 class StudioPage(tk.Frame):
     def __init__(self, parent, controller):
@@ -230,6 +261,27 @@ class StudioPage(tk.Frame):
 
         self._log(f"📁 {len(all_files)} görsel bulundu (Alt klasörler dahil).")
 
+        # Config'den AI modunu ve API key'i oku
+        ai_mode = "local"
+        wiro_api_key = ""
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r") as f:
+                    config = json.load(f)
+                    ai_mode = config.get("ai_mode", "local")
+                    wiro_api_key = config.get("wiro_api_key", "")
+            except:
+                pass
+
+        # Wiro.ai API modundaysa
+        if ai_mode == "wiro" and wiro_api_key:
+            self._log("🌐 Wiro.ai API Modu Aktif")
+            self._process_with_wiro_api(all_files, input_dir, output_dir, wiro_api_key)
+            return
+
+        # Yerel işleme modu
+        self._log("💻 Yerel İşleme Modu Aktif")
+        
         # Arka plan temizleyici Başlat
         # Öncelik: transparent-background (SOTA) -> rembg (Stabil)
         remover = None
@@ -346,6 +398,115 @@ class StudioPage(tk.Frame):
 
         self._log(f"\n🎉 İşlem Tamamlandı! ({success_count} başarılı)")
         messagebox.showinfo("Bitti", "Tüm görseller işlendi.")
+
+    def _process_with_wiro_api(self, all_files, input_dir, output_dir, api_key):
+        """Wiro.ai Nano-Banana (Gemini 2.5 Flash) API ile profesyonel stüdyo görseli oluşturma"""
+        success_count = 0
+        
+        for i, input_path in enumerate(all_files, 1):
+            filename = os.path.basename(input_path)
+            try:
+                self._log(f"[{i}/{len(all_files)}] 🍌 Wiro.ai Nano-Banana (Gemini): {filename}")
+                
+                # 1. Görseli Wiro.ai Nano-Banana API'sine gönder
+                url = "https://api.wiro.ai/v1/Run/google/nano-banana"
+                headers = {"x-api-key": api_key}
+
+                
+                with open(input_path, "rb") as img_file:
+                    files = {"inputImage": (filename, img_file)}
+                    data = {"prompt": "Remove the background completely and place this product on a pure white professional studio background with soft even lighting and subtle reflection below, product photography style for e-commerce"}
+                    response = requests.post(url, headers=headers, files=files, data=data)
+
+                
+                if response.status_code != 200:
+                    self._log(f"  ❌ API Hatası: {response.status_code}")
+                    continue
+                
+                result = response.json()
+                if not result.get("result"):
+                    self._log(f"  ❌ API Hatası: {result.get('errors', 'Bilinmeyen hata')}")
+                    continue
+                
+                task_token = result.get("socketaccesstoken")
+                self._log(f"  ⏳ Task oluşturuldu, bekleniyor...")
+                
+                # 2. Sonucu bekle (polling)
+                output_url = self._wait_for_wiro_result(api_key, task_token)
+                
+                if not output_url:
+                    self._log(f"  ❌ Sonuç alınamadı")
+                    continue
+                
+                # 3. Sonucu indir
+                img_response = requests.get(output_url)
+                if img_response.status_code != 200:
+                    self._log(f"  ❌ İndirme hatası")
+                    continue
+                
+                # Nano-banana zaten profesyonel stüdyo efekti uyguluyor
+                # Ekstra _apply_studio_effect gerekli değil
+                final_img = Image.open(io.BytesIO(img_response.content)).convert("RGBA")
+                
+                # 4. Kaydet
+                try:
+                    rel_path = os.path.relpath(os.path.dirname(input_path), input_dir)
+                except ValueError:
+                    rel_path = ""
+                
+                if self.var_organize.get():
+                    save_dir = os.path.join(output_dir, rel_path)
+                else:
+                    save_dir = output_dir
+                
+                os.makedirs(save_dir, exist_ok=True)
+                
+                name_root, _ = os.path.splitext(filename)
+                save_path = os.path.join(save_dir, f"studio_{name_root}.png")
+                
+                final_img.save(save_path, "PNG")
+                self._log(f"  ✅ Kaydedildi")
+                success_count += 1
+                
+            except Exception as e:
+                self._log(f"  ❌ Hata: {e}")
+        
+        self._log(f"\n🎉 İşlem Tamamlandı! ({success_count} başarılı)")
+        messagebox.showinfo("Bitti", "Tüm görseller işlendi.")
+
+    def _wait_for_wiro_result(self, api_key, task_token, max_wait=120):
+        """Wiro.ai task sonucunu bekle (polling)"""
+        url = "https://api.wiro.ai/v1/Task/Detail"
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": api_key
+        }
+        payload = {"tasktoken": task_token}
+        
+        start_time = time.time()
+        while time.time() - start_time < max_wait:
+            try:
+                response = requests.post(url, headers=headers, json=payload)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("result") and data.get("tasklist"):
+                        task = data["tasklist"][0]
+                        status = task.get("status", "")
+                        
+                        if status == "task_postprocess_end":
+                            # Tamamlandı
+                            outputs = task.get("outputs", [])
+                            if outputs:
+                                return outputs[0].get("url")
+                        elif status in ["task_error", "task_cancel"]:
+                            # Hata oluştu
+                            return None
+                
+                time.sleep(2)  # 2 saniye bekle
+            except Exception as e:
+                time.sleep(2)
+        
+        return None  # Timeout
 
     def _apply_studio_effect(self, img_rgba):
         from PIL import ImageFilter
@@ -847,6 +1008,10 @@ class SettingsPage(tk.Frame):
                                   bg=COLOR_BG, fg=COLOR_FG, selectcolor=COLOR_SECONDARY, activebackground=COLOR_BG, activeforeground=COLOR_FG)
         rb_local.pack(anchor="w", padx=10)
         
+        rb_wiro = tk.Radiobutton(ai_frame, text="🌐 Wiro.ai API (Bulut - Yüksek Kalite)", variable=self.var_ai_mode, value="wiro",
+                                  bg=COLOR_BG, fg=COLOR_FG, selectcolor=COLOR_SECONDARY, activebackground=COLOR_BG, activeforeground=COLOR_FG)
+        rb_wiro.pack(anchor="w", padx=10)
+        
         rb_gemini = tk.Radiobutton(ai_frame, text="Google Gemini AI", variable=self.var_ai_mode, value="gemini",
                                   bg=COLOR_BG, fg=COLOR_FG, selectcolor=COLOR_SECONDARY, activebackground=COLOR_BG, activeforeground=COLOR_FG)
         rb_gemini.pack(anchor="w", padx=10)
@@ -863,33 +1028,38 @@ class SettingsPage(tk.Frame):
         api_frame = tk.LabelFrame(self, text="API Anahtarları", bg=COLOR_BG, fg=COLOR_FG, font=("Segoe UI", 11, "bold"))
         api_frame.pack(fill=tk.X, pady=10, ipady=10)
         
+        # Wiro.ai Key (ÖNCELİKLİ)
+        tk.Label(api_frame, text="🌐 Wiro.ai API Key:", bg=COLOR_BG, fg=COLOR_FG, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.entry_wiro = tk.Entry(api_frame, bg=COLOR_SECONDARY, fg=COLOR_FG, bd=0, width=40)
+        self.entry_wiro.grid(row=0, column=1, padx=10, pady=5)
+        
         # Gemini Key
-        tk.Label(api_frame, text="Gemini API Key:", bg=COLOR_BG, fg=COLOR_FG).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        tk.Label(api_frame, text="Gemini API Key:", bg=COLOR_BG, fg=COLOR_FG).grid(row=1, column=0, padx=10, pady=5, sticky="w")
         self.entry_gemini = tk.Entry(api_frame, bg=COLOR_SECONDARY, fg=COLOR_FG, bd=0, width=40)
-        self.entry_gemini.grid(row=0, column=1, padx=10, pady=5)
+        self.entry_gemini.grid(row=1, column=1, padx=10, pady=5)
         
         # OpenAI Key
-        tk.Label(api_frame, text="OpenAI API Key:", bg=COLOR_BG, fg=COLOR_FG).grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        tk.Label(api_frame, text="OpenAI API Key:", bg=COLOR_BG, fg=COLOR_FG).grid(row=2, column=0, padx=10, pady=5, sticky="w")
         self.entry_openai = tk.Entry(api_frame, bg=COLOR_SECONDARY, fg=COLOR_FG, bd=0, width=40)
-        self.entry_openai.grid(row=1, column=1, padx=10, pady=5)
+        self.entry_openai.grid(row=2, column=1, padx=10, pady=5)
         
         # Custom API
-        tk.Label(api_frame, text="Custom API URL:", bg=COLOR_BG, fg=COLOR_FG).grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        tk.Label(api_frame, text="Custom API URL:", bg=COLOR_BG, fg=COLOR_FG).grid(row=3, column=0, padx=10, pady=5, sticky="w")
         self.entry_custom = tk.Entry(api_frame, bg=COLOR_SECONDARY, fg=COLOR_FG, bd=0, width=40)
-        self.entry_custom.grid(row=2, column=1, padx=10, pady=5)
+        self.entry_custom.grid(row=3, column=1, padx=10, pady=5)
         
         # Ikas Keys
-        tk.Label(api_frame, text="İkas Client ID:", bg=COLOR_BG, fg=COLOR_FG).grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        tk.Label(api_frame, text="İkas Client ID:", bg=COLOR_BG, fg=COLOR_FG).grid(row=4, column=0, padx=10, pady=5, sticky="w")
         self.entry_ikas_id = tk.Entry(api_frame, bg=COLOR_SECONDARY, fg=COLOR_FG, bd=0, width=40)
-        self.entry_ikas_id.grid(row=3, column=1, padx=10, pady=5)
+        self.entry_ikas_id.grid(row=4, column=1, padx=10, pady=5)
         
-        tk.Label(api_frame, text="İkas Secret:", bg=COLOR_BG, fg=COLOR_FG).grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        tk.Label(api_frame, text="İkas Secret:", bg=COLOR_BG, fg=COLOR_FG).grid(row=5, column=0, padx=10, pady=5, sticky="w")
         self.entry_ikas_secret = tk.Entry(api_frame, bg=COLOR_SECONDARY, fg=COLOR_FG, bd=0, width=40, show="*")
-        self.entry_ikas_secret.grid(row=4, column=1, padx=10, pady=5)
+        self.entry_ikas_secret.grid(row=5, column=1, padx=10, pady=5)
         
-        tk.Label(api_frame, text="Mağaza Adı (örn: kepekcioptik):", bg=COLOR_BG, fg=COLOR_FG).grid(row=5, column=0, padx=10, pady=5, sticky="w")
+        tk.Label(api_frame, text="Mağaza Adı (örn: kepekcioptik):", bg=COLOR_BG, fg=COLOR_FG).grid(row=6, column=0, padx=10, pady=5, sticky="w")
         self.entry_store = tk.Entry(api_frame, bg=COLOR_SECONDARY, fg=COLOR_FG, bd=0, width=40)
-        self.entry_store.grid(row=5, column=1, padx=10, pady=5)
+        self.entry_store.grid(row=6, column=1, padx=10, pady=5)
 
         btn_save = ttk.Button(self, text="Ayarları Kaydet", command=self._save_settings)
         btn_save.pack(anchor="e", pady=20)
@@ -905,6 +1075,7 @@ class SettingsPage(tk.Frame):
                 self.entry_ikas_id.insert(0, data.get("client_id", ""))
                 self.entry_ikas_secret.insert(0, data.get("client_secret", ""))
                 self.entry_store.insert(0, data.get("store_name", "kepekcioptik"))
+                self.entry_wiro.insert(0, data.get("wiro_api_key", ""))
                 self.entry_gemini.insert(0, data.get("gemini_api_key", ""))
                 self.entry_openai.insert(0, data.get("openai_api_key", ""))
                 self.entry_custom.insert(0, data.get("custom_api_url", ""))
@@ -917,6 +1088,7 @@ class SettingsPage(tk.Frame):
             "client_id": self.entry_ikas_id.get().strip(),
             "client_secret": self.entry_ikas_secret.get().strip(),
             "store_name": self.entry_store.get().strip(),
+            "wiro_api_key": self.entry_wiro.get().strip(),
             "gemini_api_key": self.entry_gemini.get().strip(),
             "openai_api_key": self.entry_openai.get().strip(),
             "custom_api_url": self.entry_custom.get().strip(),
@@ -929,6 +1101,75 @@ class SettingsPage(tk.Frame):
             messagebox.showinfo("Başarılı", "Ayarlar kaydedildi!")
         except Exception as e:
             messagebox.showerror("Hata", f"Kaydedilemedi: {e}")
+
+
+class HelpPage(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, bg=COLOR_BG)
+        self.controller = controller
+        
+        header = ttk.Label(self, text="Kullanım Talimatları", style="Header.TLabel")
+        header.pack(pady=20, padx=20, anchor="w")
+        
+        # Scrollable Text
+        text_frame = tk.Frame(self, bg=COLOR_BG)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
+        
+        scrollbar = ttk.Scrollbar(text_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.help_text = tk.Text(text_frame, bg="#333", fg="white", font=("Segoe UI", 11),
+                                 borderwidth=0, padx=20, pady=20, state="normal",
+                                 yscrollcommand=scrollbar.set)
+        self.help_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.help_text.yview)
+        
+        # İçeriği Ekle
+        content = """
+# 🔬 Kepekçi Optik - Studio & İkas Manager
+
+Bu yazılım, ürün görsellerini stüdyo kalitesinde temizlemek ve İkas'a yüklemek için geliştirilmiştir.
+
+---
+
+### 📸 1. Stüdyo Modu (Görsel Temizleme)
+*   **Giriş Klasörü:** Temizlenecek ham fotoğrafların olduğu klasörü seçin.
+*   **Model:** 'Otomatik' önerilir.
+*   **Başlat:** Program, fotoğraflardaki arka planı siler, beyaz fon ve gölge ekler.
+*   **Çıktı:** Temizlenen resimler 'output' klasörüne kaydedilir.
+
+---
+
+### 🚀 2. İkas Entegrasyonu
+Bu modül ile ürünlerinizi İkas paneline hızlıca aktarabilirsiniz.
+
+**A. Excel Oluştur & Düzenle**
+1.  Butona bastığınızda 'output' klasöründeki ürünler listelenir.
+2.  **Önizleme Penceresi:** Açılan tabloda fiyat, stok ve isimleri değiştirebilirsiniz.
+    *   **Çift Tıkla:** Hücreyi düzenle.
+    *   **➕ / 🗑️:** Satır ekle veya sil.
+3.  **Kaydet:** Onayladığınızda masaüstüne bir Excel dosyası oluşturulur. Bunu İkas paneline yükleyin.
+
+**B. Görsel Yükle**
+1.  İkas panelinden ürünleri dışa aktarın (Excel olarak indirin).
+2.  'Görsel Yükle' butonuna basıp o Excel dosyasını seçin.
+3.  Program, ürün isimlerine göre eşleşen fotoğrafları otomatik yükler.
+
+---
+
+### 💡 İpuçları & Varyantlar
+*   **Otomatik Renk Algılama:** Klasör isimlerinin son kelimesi renk kodu kabul edilir.
+    *   Örn: "Rayban 1234 **C01**" -> Renk Kodu: **C01**
+    *   İkas'taki renk kodu ile klasördeki renk kodu aynı olmalıdır.
+
+### ⚙️ Ayarlar
+*   İkas entegrasyonu için API anahtarlarını buradan girebilirsiniz.
+*   Bilgisayarınız yavaşsa AI Modunu 'Local' yerine 'API' (Gemini/OpenAI) yapabilirsiniz.
+
+Tüm işlemler bu kadar! Güle güle kullanın. 🧿
+"""
+        self.help_text.insert(tk.END, content.strip())
+        self.help_text.config(state="disabled")
 
 if __name__ == "__main__":
     app = ModernApp()
