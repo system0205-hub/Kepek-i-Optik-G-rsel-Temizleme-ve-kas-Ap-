@@ -6,5 +6,8 @@ input/
 output/
 .DS_Store
 ikas_config.json
+mail_watcher_config.json
+logs/
+reports/
 *.exe
 *.spec

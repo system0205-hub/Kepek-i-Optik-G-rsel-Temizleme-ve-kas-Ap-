@@ -1,0 +1,292 @@
+# -*- coding: utf-8 -*-
+"""
+Kepekçi Optik - Gmail Mail Watcher
+Konusunda "Güneş Gözlüğü" geçen maillerin eklerini otomatik indirir.
+"""
+
+import os
+import sys
+import json
+import time
+import email
+import imaplib
+import re
+from email.header import decode_header
+from pathlib import Path
+from datetime import datetime
+
+# Config dosyası
+CONFIG_FILE = "mail_watcher_config.json"
+
+# Varsayılan ayarlar
+DEFAULT_CONFIG = {
+    "imap_server": "imap.gmail.com",
+    "imap_port": 993,
+    "email_address": "",
+    "app_password": "",
+    "subject_keyword": "Güneş Gözlüğü",
+    "download_root": "input",
+    "poll_interval_seconds": 60,
+    "processed_folder": "Processed",
+    "save_attachments_exts": [".jpg", ".jpeg", ".png", ".webp"]
+}
+
+
+def load_config() -> dict:
+    """Konfigürasyonu yükle."""
+    config = DEFAULT_CONFIG.copy()
+    
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                file_config = json.load(f)
+                config.update(file_config)
+        except Exception as e:
+            log(f"❌ Config hatası: {e}")
+    
+    return config
+
+
+def log(message: str):
+    """Zaman damgalı log."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Hassas verileri maskele
+    masked = message
+    for word in ["password", "şifre", "secret"]:
+        if word in masked.lower():
+            masked = re.sub(r'(password|şifre|secret)[:\s]*\S+', r'\1: ****', masked, flags=re.IGNORECASE)
+    print(f"[{timestamp}] {masked}")
+
+
+def decode_subject(subject) -> str:
+    """Email konusunu decode et."""
+    if subject is None:
+        return ""
+    
+    decoded_parts = decode_header(subject)
+    result = ""
+    
+    for part, charset in decoded_parts:
+        if isinstance(part, bytes):
+            try:
+                result += part.decode(charset or "utf-8", errors="replace")
+            except:
+                result += part.decode("utf-8", errors="replace")
+        else:
+            result += part
+    
+    return result.strip()
+
+
+def sanitize_folder_name(name: str) -> str:
+    """Klasör adı için güvenli karakterler."""
+    # Geçersiz karakterleri kaldır
+    invalid_chars = r'[<>:"/\\|?*]'
+    sanitized = re.sub(invalid_chars, '', name)
+    # Çoklu boşlukları teke indir
+    sanitized = re.sub(r'\s+', ' ', sanitized)
+    return sanitized.strip()
+
+
+def get_unique_filename(folder: str, filename: str) -> str:
+    """Benzersiz dosya adı oluştur."""
+    filepath = os.path.join(folder, filename)
+    
+    if not os.path.exists(filepath):
+        return filepath
+    
+    name, ext = os.path.splitext(filename)
+    counter = 1
+    
+    while os.path.exists(filepath):
+        filepath = os.path.join(folder, f"{name}_{counter}{ext}")
+        counter += 1
+    
+    return filepath
+
+
+def process_email(mail, msg_id: bytes, config: dict) -> bool:
+    """Tek bir emaili işle."""
+    try:
+        # Email içeriğini al
+        _, msg_data = mail.fetch(msg_id, "(RFC822)")
+        email_body = msg_data[0][1]
+        msg = email.message_from_bytes(email_body)
+        
+        # Konuyu decode et
+        subject = decode_subject(msg["Subject"])
+        
+        if not subject:
+            log("  ⚠️ Konu boş, atlanıyor")
+            return False
+        
+        # Keyword kontrolü
+        keyword = config.get("subject_keyword", "Güneş Gözlüğü")
+        if keyword.lower() not in subject.lower():
+            log(f"  ⏭️ Keyword yok: {subject[:50]}")
+            return False
+        
+        log(f"📧 Mail bulundu: {subject}")
+        
+        # Klasör adı = konu
+        folder_name = sanitize_folder_name(subject)
+        download_root = config.get("download_root", "input")
+        target_folder = os.path.join(download_root, folder_name)
+        
+        # Klasörü oluştur
+        Path(target_folder).mkdir(parents=True, exist_ok=True)
+        
+        # Ekleri indir
+        allowed_exts = config.get("save_attachments_exts", [".jpg", ".jpeg", ".png", ".webp"])
+        attachment_count = 0
+        
+        for part in msg.walk():
+            if part.get_content_maintype() == "multipart":
+                continue
+            
+            filename = part.get_filename()
+            if not filename:
+                continue
+            
+            # Dosya adını decode et
+            decoded_filename = decode_subject(filename)
+            if not decoded_filename:
+                decoded_filename = f"attachment_{attachment_count + 1}"
+            
+            # Uzantı kontrolü
+            _, ext = os.path.splitext(decoded_filename.lower())
+            if ext not in allowed_exts:
+                log(f"  ⏭️ Uzantı desteklenmiyor: {decoded_filename}")
+                continue
+            
+            # Dosyayı kaydet
+            filepath = get_unique_filename(target_folder, decoded_filename)
+            
+            with open(filepath, "wb") as f:
+                f.write(part.get_payload(decode=True))
+            
+            log(f"  ✅ İndirildi: {os.path.basename(filepath)}")
+            attachment_count += 1
+        
+        if attachment_count == 0:
+            log("  ⚠️ Ek bulunamadı")
+        else:
+            log(f"  📁 Toplam: {attachment_count} dosya → {folder_name}/")
+        
+        # Maili işlenmiş olarak işaretle
+        mark_as_processed(mail, msg_id, config)
+        
+        return attachment_count > 0
+        
+    except Exception as e:
+        log(f"  ❌ Email işleme hatası: {e}")
+        return False
+
+
+def mark_as_processed(mail, msg_id: bytes, config: dict):
+    """Maili işlenmiş olarak işaretle (Processed klasörüne taşı veya okundu yap)."""
+    try:
+        processed_folder = config.get("processed_folder", "Processed")
+        
+        # Gmail'de label kullanarak taşı
+        # Önce Processed label'ı oluşturmayı dene
+        try:
+            mail.create(processed_folder)
+        except:
+            pass  # Zaten var
+        
+        # Mesajı kopyala ve sil
+        mail.copy(msg_id, processed_folder)
+        mail.store(msg_id, "+FLAGS", "\\Deleted")
+        mail.expunge()
+        
+        log(f"  📂 Taşındı: {processed_folder}")
+        
+    except Exception as e:
+        # Taşıma başarısız olursa sadece okundu olarak işaretle
+        try:
+            mail.store(msg_id, "+FLAGS", "\\Seen")
+            log("  👁️ Okundu olarak işaretlendi")
+        except:
+            log(f"  ⚠️ İşaretleme hatası: {e}")
+
+
+def check_emails(config: dict) -> int:
+    """Gmail'i kontrol et ve uygun mailleri işle."""
+    server = config.get("imap_server", "imap.gmail.com")
+    port = config.get("imap_port", 993)
+    email_addr = config.get("email_address", "")
+    password = config.get("app_password", "")
+    
+    if not email_addr or not password:
+        log("❌ Email veya şifre eksik!")
+        return 0
+    
+    processed_count = 0
+    
+    try:
+        # IMAP bağlantısı
+        log("🔗 Gmail'e bağlanıyor...")
+        mail = imaplib.IMAP4_SSL(server, port)
+        mail.login(email_addr, password)
+        log("✅ Bağlantı başarılı")
+        
+        # INBOX seç
+        mail.select("INBOX")
+        
+        # Okunmamış mailleri ara
+        _, message_numbers = mail.search(None, "UNSEEN")
+        msg_ids = message_numbers[0].split()
+        
+        if not msg_ids:
+            log("📭 Yeni mail yok")
+        else:
+            log(f"📬 {len(msg_ids)} okunmamış mail bulundu")
+            
+            for msg_id in msg_ids:
+                if process_email(mail, msg_id, config):
+                    processed_count += 1
+        
+        mail.logout()
+        
+    except imaplib.IMAP4.error as e:
+        log(f"❌ IMAP hatası: {e}")
+    except Exception as e:
+        log(f"❌ Bağlantı hatası: {e}")
+    
+    return processed_count
+
+
+def run_watcher():
+    """Mail izleyiciyi başlat."""
+    log("=" * 50)
+    log("🚀 Kepekçi Optik Mail Watcher Başlatıldı")
+    log("=" * 50)
+    
+    config = load_config()
+    
+    if not config.get("email_address") or not config.get("app_password"):
+        log("❌ Lütfen mail_watcher_config.json dosyasını yapılandırın!")
+        return
+    
+    email_masked = config["email_address"][:3] + "***@" + config["email_address"].split("@")[1]
+    log(f"📧 Hesap: {email_masked}")
+    log(f"🔍 Keyword: {config.get('subject_keyword', 'Güneş Gözlüğü')}")
+    log(f"📁 İndirme klasörü: {config.get('download_root', 'input')}/")
+    log(f"⏱️ Kontrol aralığı: {config.get('poll_interval_seconds', 60)} saniye")
+    log("-" * 50)
+    
+    poll_interval = config.get("poll_interval_seconds", 60)
+    
+    try:
+        while True:
+            check_emails(config)
+            log(f"💤 {poll_interval} saniye bekleniyor...")
+            time.sleep(poll_interval)
+            
+    except KeyboardInterrupt:
+        log("\n🛑 Mail Watcher durduruldu (Ctrl+C)")
+
+
+if __name__ == "__main__":
+    run_watcher()
