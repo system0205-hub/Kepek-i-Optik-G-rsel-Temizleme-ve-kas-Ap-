@@ -1,3 +1,9 @@
+# -*- coding: utf-8 -*-
+"""
+Kepekçi Optik - Studio & İkas Manager
+Ana GUI uygulaması.
+"""
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
@@ -11,6 +17,14 @@ from PIL import Image, ImageTk
 import cv2
 import numpy as np
 import requests
+
+# Yeni modüller
+from config import load_config, save_config, get_timeout
+from logging_utils import setup_logging, set_ui_widget, ui_log, log_info, log_warning, log_error, log_success
+from net import create_session, request_with_retry, NetworkError
+from wiro import run_nano_banana, validate_api_key, WiroError
+from studio import apply_studio_effect, process_with_failure_policy, validate_image
+from ikas import normalize_variant, validate_excel_columns, UploadReport, find_image_for_variant
 
 # --- KONFİGÜRASYON VE SABİTLER ---
 CONFIG_FILE = "ikas_config.json"
