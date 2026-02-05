@@ -25,6 +25,7 @@ from net import create_session, request_with_retry, NetworkError
 from wiro import run_nano_banana, validate_api_key, WiroError
 from studio import apply_studio_effect, process_with_failure_policy, validate_image
 from ikas import normalize_variant, validate_excel_columns, UploadReport, find_image_for_variant
+from description import generate_product_description
 
 # --- KONFİGÜRASYON VE SABİTLER ---
 CONFIG_FILE = "ikas_config.json"
@@ -676,7 +677,7 @@ class IkasPage(tk.Frame):
                         "Ürün Grup ID": "", 
                         "Varyant ID": "",   
                         "İsim": product_name,
-                        "Açıklama": f"<p>{product_name}</p>",
+                        "Açıklama": generate_product_description(product_name, brand),
                         "Satış Fiyatı": 0,
                         "İndirimli Fiyatı": "",
                         "Alış Fiyatı": "",
