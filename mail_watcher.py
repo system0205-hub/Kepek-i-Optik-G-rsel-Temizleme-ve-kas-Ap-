@@ -92,8 +92,10 @@ def parse_subject_to_folders(subject: str) -> tuple:
     """
     Mail konusunu ana klasör ve renk klasörüne ayır.
     
-    Format: "<Marka> <Model> <Renk> Güneş Gözlüğü"
+    Format: "<Marka> <Model> <Renk> [Opsiyonel Etiketler] Güneş Gözlüğü"
     Örnek: "Rayban 2140 C03 Güneş Gözlüğü"
+    Örnek: "Rayban 2140 C03 Polarize Güneş Gözlüğü"
+    Örnek: "Venture 1205 C02 Çocuk Güneş Gözlüğü"
     
     Returns:
         (main_folder, color_folder) veya (None, None) hata durumunda
@@ -120,36 +122,63 @@ def parse_subject_to_folders(subject: str) -> tuple:
         # En az marka + model + renk gerekli
         return None, None
     
-    # Son token = renk (C01, C02, 01, 02 gibi)
-    color_raw = tokens[-1].upper()
+    # Opsiyonel etiketler (renk kodundan sonra gelebilir)
+    OPTIONAL_TAGS = ["polarize", "çocuk", "kadın", "erkek", "unisex", "uv400", "aynalı"]
     
-    # Renk normalize: "03" -> "C03", "C03" -> "C03"
-    color_match = re.match(r'^C?(\d{1,3})$', color_raw)
-    if color_match:
-        color_num = color_match.group(1).zfill(2)  # "3" -> "03"
-        color = f"C{color_num}"
-    else:
-        # Renk formatı uygun değil ama yine de kabul et
-        color = color_raw
+    # Sondan renk kodunu bul (Cxx veya xx formatında)
+    color = None
+    color_index = -1
+    optional_tags_found = []
     
-    # Model = sondan ikinci token (büyük harf)
-    model = tokens[-2].upper()
+    # Sondan başa doğru tara
+    for i in range(len(tokens) - 1, -1, -1):
+        token = tokens[i]
+        token_lower = token.lower()
+        
+        # Opsiyonel etiket mi?
+        if token_lower in OPTIONAL_TAGS:
+            optional_tags_found.insert(0, token)
+            continue
+        
+        # Renk kodu mu? (C01, C02, 01, 02, C1, C2 gibi)
+        color_match = re.match(r'^C?(\d{1,3})$', token, re.IGNORECASE)
+        if color_match:
+            color_num = color_match.group(1).zfill(2)  # "3" -> "03"
+            color = f"C{color_num}"
+            color_index = i
+            break
+        else:
+            # Ne etiket ne renk - bu muhtemelen model veya marka
+            break
     
-    # Marka = geriye kalan tokenlar
-    brand_tokens = tokens[:-2]
+    if not color or color_index < 2:
+        # Renk bulunamadı veya yeterli token yok
+        return None, None
+    
+    # Model = renkten önceki token (büyük harf)
+    model = tokens[color_index - 1].upper()
+    
+    # Marka = modelden önceki tokenlar
+    brand_tokens = tokens[:color_index - 1]
     if not brand_tokens:
         return None, None
     
     brand = " ".join(brand_tokens)
     
-    # Ana klasör adı: "Marka Model Güneş Gözlüğü"
-    main_folder = f"{brand} {model} Güneş Gözlüğü"
+    # Ana klasör adı: "Marka Model [Etiketler] Güneş Gözlüğü"
+    if optional_tags_found:
+        tags_str = " ".join(optional_tags_found)
+        main_folder = f"{brand} {model} {tags_str} Güneş Gözlüğü"
+    else:
+        main_folder = f"{brand} {model} Güneş Gözlüğü"
+    
     main_folder = sanitize_folder_name(main_folder)
     
     # Renk klasörü
     color_folder = sanitize_folder_name(color)
     
     return main_folder, color_folder
+
 
 
 def get_unique_filename(folder: str, filename: str) -> str:
