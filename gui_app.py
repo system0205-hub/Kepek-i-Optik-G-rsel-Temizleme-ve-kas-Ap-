@@ -82,6 +82,7 @@ class ModernApp(tk.Tk):
         # Menü Butonları
         self.btn_studio = self._create_sidebar_btn("📸 Stüdyo Modu", lambda: self.show_frame("studio"))
         self.btn_ikas = self._create_sidebar_btn("🚀 İkas Entegrasyon", lambda: self.show_frame("ikas"))
+        self.btn_mail = self._create_sidebar_btn("📧 Mail Watcher", lambda: self.show_frame("mail"))
         self.btn_settings = self._create_sidebar_btn("⚙️ Ayarlar", lambda: self.show_frame("settings"))
         self.btn_help = self._create_sidebar_btn("❓ Yardım", lambda: self.show_frame("help"))
 
@@ -93,7 +94,7 @@ class ModernApp(tk.Tk):
 
         # Sayfalar
         self.frames = {}
-        for F in (StudioPage, IkasPage, SettingsPage, HelpPage):
+        for F in (StudioPage, IkasPage, MailWatcherPage, SettingsPage, HelpPage):
             page_name = F.__name__
             frame = F(parent=self.content_area, controller=self)
             self.frames[page_name] = frame
@@ -155,6 +156,7 @@ class ModernApp(tk.Tk):
         mapping = {
             "studio": "StudioPage",
             "ikas": "IkasPage",
+            "mail": "MailWatcherPage",
             "settings": "SettingsPage",
             "help": "HelpPage"
         }
@@ -163,25 +165,21 @@ class ModernApp(tk.Tk):
             frame = self.frames[name]
             frame.tkraise()
             
-            # Update sidebar active state (visual only)
-            if page_alias == "studio":
-                self.btn_studio.config(bg=COLOR_ACCENT)
-                self.btn_ikas.config(bg=COLOR_SECONDARY)
-                self.btn_settings.config(bg=COLOR_SECONDARY)
-            elif page_alias == "ikas":
-                self.btn_studio.config(bg=COLOR_SECONDARY)
-                self.btn_ikas.config(bg=COLOR_ACCENT)
-                self.btn_settings.config(bg=COLOR_SECONDARY)
-            elif page_alias == "settings":
-                self.btn_studio.config(bg=COLOR_SECONDARY)
-                self.btn_ikas.config(bg=COLOR_SECONDARY)
-                self.btn_settings.config(bg=COLOR_ACCENT)
-                self.btn_help.config(bg=COLOR_SECONDARY)
-            elif page_alias == "help":
-                self.btn_studio.config(bg=COLOR_SECONDARY)
-                self.btn_ikas.config(bg=COLOR_SECONDARY)
-                self.btn_settings.config(bg=COLOR_SECONDARY)
-                self.btn_help.config(bg=COLOR_ACCENT)
+            # Reset all buttons
+            all_btns = [self.btn_studio, self.btn_ikas, self.btn_mail, self.btn_settings, self.btn_help]
+            for btn in all_btns:
+                btn.config(bg=COLOR_SECONDARY)
+            
+            # Highlight active
+            btn_map = {
+                "studio": self.btn_studio,
+                "ikas": self.btn_ikas,
+                "mail": self.btn_mail,
+                "settings": self.btn_settings,
+                "help": self.btn_help
+            }
+            if page_alias in btn_map:
+                btn_map[page_alias].config(bg=COLOR_ACCENT)
 
 class StudioPage(tk.Frame):
     def __init__(self, parent, controller):
@@ -1116,6 +1114,292 @@ class SettingsPage(tk.Frame):
             messagebox.showinfo("Başarılı", "Ayarlar kaydedildi!")
         except Exception as e:
             messagebox.showerror("Hata", f"Kaydedilemedi: {e}")
+
+
+# ============================================
+# MAIL WATCHER PAGE
+# ============================================
+class MailWatcherPage(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, bg=COLOR_BG)
+        self.controller = controller
+        self.watcher_thread = None
+        self.is_running = False
+        self.stop_flag = False
+        
+        self._build_ui()
+        self._load_config()
+    
+    def _build_ui(self):
+        # Başlık
+        header = ttk.Label(self, text="📧 Mail Watcher", style="Header.TLabel")
+        header.pack(pady=(20, 5))
+        
+        subtitle = ttk.Label(self, text="Gmail'den otomatik fotoğraf indirme", style="SubHeader.TLabel")
+        subtitle.pack(pady=(0, 20))
+        
+        # Ana container
+        main_frame = tk.Frame(self, bg=COLOR_BG)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=10)
+        
+        # Sol Panel - Kontroller
+        left_panel = tk.Frame(main_frame, bg=COLOR_SECONDARY, width=300)
+        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 15))
+        left_panel.pack_propagate(False)
+        
+        # Durum Göstergesi
+        self.status_frame = tk.Frame(left_panel, bg=COLOR_SECONDARY)
+        self.status_frame.pack(fill=tk.X, pady=20, padx=15)
+        
+        self.status_icon = tk.Label(self.status_frame, text="⏹️", font=("Segoe UI", 40), 
+                                    bg=COLOR_SECONDARY, fg=COLOR_FG)
+        self.status_icon.pack()
+        
+        self.status_label = tk.Label(self.status_frame, text="Durduruldu", 
+                                     font=("Segoe UI", 14, "bold"), 
+                                     bg=COLOR_SECONDARY, fg=COLOR_FG)
+        self.status_label.pack(pady=5)
+        
+        # Başlat/Durdur Butonu
+        self.toggle_btn = tk.Button(left_panel, text="▶️ BAŞLAT", 
+                                    command=self._toggle_watcher,
+                                    font=("Segoe UI", 12, "bold"),
+                                    bg=COLOR_SUCCESS, fg="white",
+                                    activebackground="#27ae60",
+                                    relief=tk.FLAT, cursor="hand2",
+                                    width=20, height=2)
+        self.toggle_btn.pack(pady=15)
+        
+        # Ayırıcı
+        tk.Frame(left_panel, bg="#333", height=1).pack(fill=tk.X, pady=15, padx=15)
+        
+        # İstatistikler
+        stats_label = tk.Label(left_panel, text="📊 İstatistikler", 
+                               font=("Segoe UI", 11, "bold"),
+                               bg=COLOR_SECONDARY, fg=COLOR_ACCENT)
+        stats_label.pack(anchor="w", padx=15)
+        
+        self.stats_text = tk.Label(left_panel, text="Son kontrol: -\nİndirilen: 0 dosya", 
+                                   font=("Segoe UI", 10),
+                                   bg=COLOR_SECONDARY, fg=COLOR_FG, justify="left")
+        self.stats_text.pack(anchor="w", padx=15, pady=10)
+        
+        # Sağ Panel - Log
+        right_panel = tk.Frame(main_frame, bg=COLOR_SECONDARY)
+        right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        log_header = tk.Label(right_panel, text="📋 Mail Watcher Log", 
+                              font=("Segoe UI", 11, "bold"),
+                              bg=COLOR_SECONDARY, fg=COLOR_ACCENT)
+        log_header.pack(anchor="w", padx=15, pady=(15, 5))
+        
+        # Log Text
+        log_frame = tk.Frame(right_panel, bg=COLOR_BG)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+        
+        self.log_text = tk.Text(log_frame, bg=COLOR_BG, fg=COLOR_FG, 
+                                font=("Consolas", 9), wrap=tk.WORD,
+                                relief=tk.FLAT, state="disabled")
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        
+        scrollbar = tk.Scrollbar(self.log_text)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.config(yscrollcommand=scrollbar.set)
+        scrollbar.config(command=self.log_text.yview)
+        
+        # Alt bilgi
+        self.info_label = tk.Label(self, text="💡 Tedarikçi 'Güneş Gözlüğü' konulu mail atınca fotoğraflar otomatik indirilir", 
+                                   font=("Segoe UI", 9),
+                                   bg=COLOR_BG, fg="#888")
+        self.info_label.pack(side=tk.BOTTOM, pady=10)
+    
+    def _load_config(self):
+        """Mail watcher config'ini yükle."""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "mail_watcher_config.json")
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    self.config = json.load(f)
+                self._log("✅ Konfigürasyon yüklendi")
+            else:
+                self.config = {}
+                self._log("⚠️ mail_watcher_config.json bulunamadı")
+        except Exception as e:
+            self.config = {}
+            self._log(f"❌ Config hatası: {e}")
+    
+    def _log(self, message):
+        """Log mesajı ekle."""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        self.log_text.config(state="normal")
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state="disabled")
+    
+    def _toggle_watcher(self):
+        """Başlat/Durdur toggle."""
+        if self.is_running:
+            self._stop_watcher()
+        else:
+            self._start_watcher()
+    
+    def _start_watcher(self):
+        """Mail watcher'ı başlat."""
+        if not self.config.get("email_address") or not self.config.get("app_password"):
+            messagebox.showwarning("Uyarı", "Lütfen mail_watcher_config.json dosyasını yapılandırın!")
+            return
+        
+        self.is_running = True
+        self.stop_flag = False
+        
+        self.status_icon.config(text="🟢")
+        self.status_label.config(text="Çalışıyor", fg=COLOR_SUCCESS)
+        self.toggle_btn.config(text="⏹️ DURDUR", bg=COLOR_ERROR)
+        
+        self._log("🚀 Mail Watcher başlatıldı")
+        
+        # Thread başlat
+        self.watcher_thread = threading.Thread(target=self._watcher_loop, daemon=True)
+        self.watcher_thread.start()
+    
+    def _stop_watcher(self):
+        """Mail watcher'ı durdur."""
+        self.stop_flag = True
+        self.is_running = False
+        
+        self.status_icon.config(text="⏹️")
+        self.status_label.config(text="Durduruldu", fg=COLOR_FG)
+        self.toggle_btn.config(text="▶️ BAŞLAT", bg=COLOR_SUCCESS)
+        
+        self._log("🛑 Mail Watcher durduruldu")
+    
+    def _watcher_loop(self):
+        """Mail kontrol döngüsü."""
+        import imaplib
+        import email
+        from email.header import decode_header
+        from pathlib import Path
+        
+        poll_interval = self.config.get("poll_interval_seconds", 60)
+        download_count = 0
+        
+        while not self.stop_flag:
+            try:
+                self._log("🔍 Gmail kontrol ediliyor...")
+                
+                # IMAP bağlantısı
+                mail = imaplib.IMAP4_SSL(
+                    self.config.get("imap_server", "imap.gmail.com"),
+                    self.config.get("imap_port", 993)
+                )
+                mail.login(self.config["email_address"], self.config["app_password"])
+                mail.select("INBOX")
+                
+                # Okunmamış mailleri ara
+                _, message_numbers = mail.search(None, "UNSEEN")
+                msg_ids = message_numbers[0].split()
+                
+                if not msg_ids:
+                    self._log("📭 Yeni mail yok")
+                else:
+                    keyword = self.config.get("subject_keyword", "Güneş Gözlüğü")
+                    
+                    for msg_id in msg_ids:
+                        _, msg_data = mail.fetch(msg_id, "(RFC822)")
+                        msg = email.message_from_bytes(msg_data[0][1])
+                        
+                        # Konu decode
+                        subject_raw = msg["Subject"]
+                        if subject_raw:
+                            decoded = decode_header(subject_raw)
+                            subject = ""
+                            for part, charset in decoded:
+                                if isinstance(part, bytes):
+                                    subject += part.decode(charset or "utf-8", errors="replace")
+                                else:
+                                    subject += part
+                        else:
+                            subject = ""
+                        
+                        # Keyword kontrolü
+                        if keyword.lower() in subject.lower():
+                            self._log(f"📧 Mail bulundu: {subject[:40]}...")
+                            
+                            # Klasör oluştur
+                            import re
+                            folder_name = re.sub(r'[<>:"/\\|?*]', '', subject).strip()
+                            download_root = self.config.get("download_root", "input")
+                            target_folder = os.path.join(download_root, folder_name)
+                            Path(target_folder).mkdir(parents=True, exist_ok=True)
+                            
+                            # Ekleri indir
+                            allowed_exts = self.config.get("save_attachments_exts", [".jpg", ".jpeg", ".png", ".webp"])
+                            
+                            for part in msg.walk():
+                                if part.get_content_maintype() == "multipart":
+                                    continue
+                                
+                                filename = part.get_filename()
+                                if not filename:
+                                    continue
+                                
+                                # Dosya adı decode
+                                decoded_fn = decode_header(filename)
+                                if decoded_fn[0][1]:
+                                    filename = decoded_fn[0][0].decode(decoded_fn[0][1])
+                                elif isinstance(decoded_fn[0][0], bytes):
+                                    filename = decoded_fn[0][0].decode("utf-8", errors="replace")
+                                else:
+                                    filename = decoded_fn[0][0]
+                                
+                                _, ext = os.path.splitext(filename.lower())
+                                if ext in allowed_exts:
+                                    filepath = os.path.join(target_folder, filename)
+                                    
+                                    # Aynı isim varsa numara ekle
+                                    counter = 1
+                                    base, ext_orig = os.path.splitext(filepath)
+                                    while os.path.exists(filepath):
+                                        filepath = f"{base}_{counter}{ext_orig}"
+                                        counter += 1
+                                    
+                                    with open(filepath, "wb") as f:
+                                        f.write(part.get_payload(decode=True))
+                                    
+                                    download_count += 1
+                                    self._log(f"  ✅ {filename}")
+                            
+                            # Maili işlenmiş olarak işaretle
+                            try:
+                                processed_folder = self.config.get("processed_folder", "Processed")
+                                try:
+                                    mail.create(processed_folder)
+                                except:
+                                    pass
+                                mail.copy(msg_id, processed_folder)
+                                mail.store(msg_id, "+FLAGS", "\\Deleted")
+                            except:
+                                mail.store(msg_id, "+FLAGS", "\\Seen")
+                
+                mail.expunge()
+                mail.logout()
+                
+                # İstatistikleri güncelle
+                from datetime import datetime
+                self.stats_text.config(text=f"Son kontrol: {datetime.now().strftime('%H:%M:%S')}\nİndirilen: {download_count} dosya")
+                
+            except Exception as e:
+                self._log(f"❌ Hata: {str(e)[:50]}")
+            
+            # Bekle
+            for _ in range(poll_interval):
+                if self.stop_flag:
+                    break
+                time.sleep(1)
+        
+        self._log("👋 Watcher döngüsü sonlandı")
 
 
 class HelpPage(tk.Frame):
