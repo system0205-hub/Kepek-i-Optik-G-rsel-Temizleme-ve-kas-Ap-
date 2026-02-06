@@ -1327,12 +1327,19 @@ class MailWatcherPage(tk.Frame):
                         if keyword.lower() in subject.lower():
                             self._log(f"📧 Mail bulundu: {subject[:40]}...")
                             
-                            # Klasör oluştur
-                            import re
-                            folder_name = re.sub(r'[<>:"/\\|?*]', '', subject).strip()
+                            # Klasör yapısını ayrıştır (model/renk)
+                            from mail_watcher import parse_subject_to_folders
+                            main_folder, color_folder = parse_subject_to_folders(subject)
+                            
+                            if not main_folder or not color_folder:
+                                self._log(f"  ⚠️ Konu formatı uygun değil")
+                                mail.store(msg_id, "+FLAGS", "\\Seen")
+                                continue
+                            
                             download_root = self.config.get("download_root", "input")
-                            target_folder = os.path.join(download_root, folder_name)
+                            target_folder = os.path.join(download_root, main_folder, color_folder)
                             Path(target_folder).mkdir(parents=True, exist_ok=True)
+                            self._log(f"  📁 {main_folder}/{color_folder}/")
                             
                             # Ekleri indir
                             allowed_exts = self.config.get("save_attachments_exts", [".jpg", ".jpeg", ".png", ".webp"])

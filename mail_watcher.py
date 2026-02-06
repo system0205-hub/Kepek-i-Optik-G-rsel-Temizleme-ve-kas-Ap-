@@ -88,6 +88,70 @@ def sanitize_folder_name(name: str) -> str:
     return sanitized.strip()
 
 
+def parse_subject_to_folders(subject: str) -> tuple:
+    """
+    Mail konusunu ana klasör ve renk klasörüne ayır.
+    
+    Format: "<Marka> <Model> <Renk> Güneş Gözlüğü"
+    Örnek: "Rayban 2140 C03 Güneş Gözlüğü"
+    
+    Returns:
+        (main_folder, color_folder) veya (None, None) hata durumunda
+    """
+    if not subject:
+        return None, None
+    
+    subject = subject.strip()
+    
+    # "Güneş Gözlüğü" kontrolü (case-insensitive)
+    keyword_pattern = r'\s*güneş\s+gözlü[gğ]ü\s*$'
+    match = re.search(keyword_pattern, subject, re.IGNORECASE)
+    
+    if not match:
+        return None, None
+    
+    # Keyword'ü kaldır
+    remaining = subject[:match.start()].strip()
+    
+    # Tokenlara ayır
+    tokens = remaining.split()
+    
+    if len(tokens) < 3:
+        # En az marka + model + renk gerekli
+        return None, None
+    
+    # Son token = renk (C01, C02, 01, 02 gibi)
+    color_raw = tokens[-1].upper()
+    
+    # Renk normalize: "03" -> "C03", "C03" -> "C03"
+    color_match = re.match(r'^C?(\d{1,3})$', color_raw)
+    if color_match:
+        color_num = color_match.group(1).zfill(2)  # "3" -> "03"
+        color = f"C{color_num}"
+    else:
+        # Renk formatı uygun değil ama yine de kabul et
+        color = color_raw
+    
+    # Model = sondan ikinci token (büyük harf)
+    model = tokens[-2].upper()
+    
+    # Marka = geriye kalan tokenlar
+    brand_tokens = tokens[:-2]
+    if not brand_tokens:
+        return None, None
+    
+    brand = " ".join(brand_tokens)
+    
+    # Ana klasör adı: "Marka Model Güneş Gözlüğü"
+    main_folder = f"{brand} {model} Güneş Gözlüğü"
+    main_folder = sanitize_folder_name(main_folder)
+    
+    # Renk klasörü
+    color_folder = sanitize_folder_name(color)
+    
+    return main_folder, color_folder
+
+
 def get_unique_filename(folder: str, filename: str) -> str:
     """Benzersiz dosya adı oluştur."""
     filepath = os.path.join(folder, filename)
@@ -128,13 +192,25 @@ def process_email(mail, msg_id: bytes, config: dict) -> bool:
         
         log(f"📧 Mail bulundu: {subject}")
         
-        # Klasör adı = konu
-        folder_name = sanitize_folder_name(subject)
+        # Klasör yapısını ayrıştır (model/renk)
+        main_folder, color_folder = parse_subject_to_folders(subject)
+        
+        if not main_folder or not color_folder:
+            log(f"  ⚠️ Konu formatı uygun değil: {subject[:50]}")
+            log("  💡 Beklenen: 'Marka Model Renk Güneş Gözlüğü'")
+            # Maili seen yap ki döngüye girmesin
+            try:
+                mail.store(msg_id, "+FLAGS", "\\Seen")
+            except:
+                pass
+            return False
+        
         download_root = config.get("download_root", "input")
-        target_folder = os.path.join(download_root, folder_name)
+        target_folder = os.path.join(download_root, main_folder, color_folder)
         
         # Klasörü oluştur
         Path(target_folder).mkdir(parents=True, exist_ok=True)
+        log(f"  📁 Hedef: {main_folder}/{color_folder}/")
         
         # Ekleri indir
         allowed_exts = config.get("save_attachments_exts", [".jpg", ".jpeg", ".png", ".webp"])
@@ -171,7 +247,7 @@ def process_email(mail, msg_id: bytes, config: dict) -> bool:
         if attachment_count == 0:
             log("  ⚠️ Ek bulunamadı")
         else:
-            log(f"  📁 Toplam: {attachment_count} dosya → {folder_name}/")
+            log(f"  📁 Toplam: {attachment_count} dosya → {main_folder}/{color_folder}/")
         
         # Maili işlenmiş olarak işaretle
         mark_as_processed(mail, msg_id, config)
