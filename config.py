@@ -23,6 +23,9 @@ CONFIG_DEFAULTS = {
         "storefront": True,
         "trendyol": False
     },
+    "ikas_google_taxonomy_id": "178",
+    "ikas_ai_description_enabled": True,
+    "ikas_description_model": "gpt-4o-mini",
     "wiro_api_key": "",
     "ai_mode": "wiro",
     
@@ -48,6 +51,8 @@ ENV_OVERRIDES = {
     "IKAS_CLIENT_SECRET": "client_secret",
     "IKAS_STORE_NAME": "store_name",
     "IKAS_MCP_TOKEN": "ikas_mcp_token",
+    "OPENAI_API_KEY": "openai_api_key",
+    "GEMINI_API_KEY": "gemini_api_key",
     "WIRO_API_KEY": "wiro_api_key",
     "AI_MODE": "ai_mode"
 }
@@ -92,6 +97,7 @@ def save_config(config: dict) -> bool:
     ui_fields = [
         "store_name", "client_id", "client_secret", 
         "ikas_mcp_token", "ikas_price_rules_file", "ikas_sales_channel_defaults",
+        "ikas_google_taxonomy_id", "ikas_ai_description_enabled", "ikas_description_model",
         "wiro_api_key", "ai_mode",
         "gemini_api_key", "openai_api_key", "custom_api_url"
     ]

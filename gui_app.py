@@ -5,7 +5,7 @@ Ana GUI uygulaması.
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 import threading
 import os
 import sys
@@ -17,6 +17,7 @@ from PIL import Image, ImageTk
 import cv2
 import numpy as np
 import requests
+import re
 
 # Yeni modüller
 from config import load_config, save_config, get_timeout
@@ -25,7 +26,12 @@ from net import create_session, request_with_retry, NetworkError
 from wiro import run_nano_banana, validate_api_key, WiroError
 from studio import apply_studio_effect, process_with_failure_policy, validate_image
 from ikas import normalize_variant, validate_excel_columns, UploadReport, find_image_for_variant
-from ikas_automation import IkasAutomationRunner, AutomationError
+from ikas_automation import (
+    IkasAutomationRunner,
+    AutomationError,
+    FIT_GUIDE_MARKER,
+    FIT_GUIDE_HTML,
+)
 from description import generate_product_description
 
 # --- KONFİGÜRASYON VE SABİTLER ---
@@ -85,6 +91,8 @@ class ModernApp(tk.Tk):
         self.btn_ikas = self._create_sidebar_btn("🚀 İkas Entegrasyon", lambda: self.show_frame("ikas"))
         self.btn_mail = self._create_sidebar_btn("📧 Mail Watcher", lambda: self.show_frame("mail"))
         self.btn_settings = self._create_sidebar_btn("⚙️ Ayarlar", lambda: self.show_frame("settings"))
+        self.btn_delete_panel = self._create_sidebar_btn("🗑️ Ürün Silme (Güvenli)", self._open_delete_panel_from_sidebar)
+        self.btn_description_panel = self._create_sidebar_btn("🧩 Özel Alanlar", self._open_description_panel_from_sidebar)
         self.btn_help = self._create_sidebar_btn("❓ Yardım", lambda: self.show_frame("help"))
 
         # Alt Bilgi - Nano-banana versiyon
@@ -159,6 +167,8 @@ class ModernApp(tk.Tk):
             "ikas": "IkasPage",
             "mail": "MailWatcherPage",
             "settings": "SettingsPage",
+            "delete": "IkasPage",
+            "description": "IkasPage",
             "help": "HelpPage"
         }
         name = mapping.get(page_alias)
@@ -167,7 +177,15 @@ class ModernApp(tk.Tk):
             frame.tkraise()
             
             # Reset all buttons
-            all_btns = [self.btn_studio, self.btn_ikas, self.btn_mail, self.btn_settings, self.btn_help]
+            all_btns = [
+                self.btn_studio,
+                self.btn_ikas,
+                self.btn_mail,
+                self.btn_settings,
+                self.btn_delete_panel,
+                self.btn_description_panel,
+                self.btn_help,
+            ]
             for btn in all_btns:
                 btn.config(bg=COLOR_SECONDARY)
             
@@ -177,10 +195,24 @@ class ModernApp(tk.Tk):
                 "ikas": self.btn_ikas,
                 "mail": self.btn_mail,
                 "settings": self.btn_settings,
+                "delete": self.btn_delete_panel,
+                "description": self.btn_description_panel,
                 "help": self.btn_help
             }
             if page_alias in btn_map:
                 btn_map[page_alias].config(bg=COLOR_ACCENT)
+
+    def _open_delete_panel_from_sidebar(self):
+        self.show_frame("delete")
+        frame = self.frames.get("IkasPage")
+        if frame and hasattr(frame, "_open_delete_popup"):
+            self.after(120, frame._open_delete_popup)
+
+    def _open_description_panel_from_sidebar(self):
+        self.show_frame("description")
+        frame = self.frames.get("IkasPage")
+        if frame and hasattr(frame, "_open_fitguide_popup"):
+            self.after(120, frame._open_fitguide_popup)
 
 class StudioPage(tk.Frame):
     def __init__(self, parent, controller):
@@ -666,6 +698,42 @@ class IkasPage(tk.Frame):
         )
         self.btn_full_automation.pack(fill=tk.X, pady=(10, 0))
 
+        progress_box = tk.Frame(step0_frame, bg=COLOR_SECONDARY)
+        progress_box.pack(fill=tk.X, pady=(10, 0))
+        self.full_auto_progress_text = tk.StringVar(value="Hazır")
+        lbl_progress = tk.Label(
+            progress_box,
+            textvariable=self.full_auto_progress_text,
+            bg=COLOR_SECONDARY,
+            fg=COLOR_WARNING,
+            anchor="w",
+        )
+        lbl_progress.pack(fill=tk.X, pady=(0, 4))
+
+        self.full_auto_progress = tk.DoubleVar(value=0.0)
+        self.progress_full_auto = ttk.Progressbar(
+            progress_box,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
+            variable=self.full_auto_progress,
+        )
+        self.progress_full_auto.pack(fill=tk.X)
+
+        # Aciklama iyilestirme popup durum degiskenleri
+        self.fitguide_search_text = tk.StringVar()
+        self.fitguide_progress_text = tk.StringVar(value="Hazır")
+        self.fitguide_progress = tk.DoubleVar(value=0.0)
+        self.btn_fitguide_sync = None
+        self.fitguide_popup_window = None
+        self.fitguide_popup_results = []
+        self.fitguide_popup_selected = []
+        self.fitguide_popup_list = None
+        self.fitguide_popup_label = None
+        self.fitguide_feature_frame = None
+        self.fitguide_hint_label = None
+        self.fitguide_attribute_id = ""
+
         # Step 1: Generate Excel
         step1_frame = tk.Frame(self, bg=COLOR_SECONDARY, padx=15, pady=15)
         step1_frame.pack(fill=tk.X, pady=10)
@@ -717,6 +785,63 @@ class IkasPage(tk.Frame):
         self.log_text.config(state="disabled")
         self.update_idletasks()
 
+    def _set_full_auto_progress(self, value, text=None):
+        try:
+            value = max(0.0, min(100.0, float(value)))
+        except Exception:
+            value = 0.0
+        self.full_auto_progress.set(value)
+        if text is not None:
+            self.full_auto_progress_text.set(str(text))
+        self.update_idletasks()
+
+    def _set_full_auto_running(self, running):
+        state = "disabled" if running else "normal"
+        try:
+            self.btn_full_automation.config(state=state)
+        except Exception:
+            pass
+
+    def _set_fitguide_sync_running(self, running):
+        state = "disabled" if running else "normal"
+        try:
+            self.btn_fitguide_sync.config(state=state)
+        except Exception:
+            pass
+
+    def _set_fitguide_sync_progress(self, value, text=None):
+        try:
+            value = max(0.0, min(100.0, float(value)))
+        except Exception:
+            value = 0.0
+        self.fitguide_progress.set(value)
+        if text is not None:
+            self.fitguide_progress_text.set(str(text))
+        self.update_idletasks()
+
+    def _on_automation_progress(self, payload):
+        current = int(payload.get("current", 0) or 0)
+        total = int(payload.get("total", 0) or 0)
+        message = str(payload.get("message", "") or "")
+        stage = str(payload.get("stage", "") or "")
+        product_name = str(payload.get("product_name", "") or "")
+        status = str(payload.get("status", "") or "")
+
+        percent = 0.0
+        if total > 0:
+            percent = (current / total) * 100.0
+
+        if stage == "product_start" and product_name:
+            ui_text = f"İşleniyor ({current + 1}/{total}): {product_name}"
+        elif stage == "product_done" and product_name:
+            ui_text = f"Tamamlandı ({current}/{total}): {product_name} [{status}]"
+        elif stage == "completed":
+            ui_text = "Tam otomasyon bitti."
+        else:
+            ui_text = message or "Tam otomasyon çalışıyor..."
+
+        self.after(0, lambda: self._set_full_auto_progress(percent, ui_text))
+
     def _load_automation_defaults(self):
         try:
             config = load_config()
@@ -766,6 +891,8 @@ class IkasPage(tk.Frame):
             return
 
         self._save_automation_defaults()
+        self._set_full_auto_running(True)
+        self._set_full_auto_progress(0, "Tam otomasyon hazırlanıyor...")
         threading.Thread(
             target=self._full_automation_logic,
             args=(price_file, channel_preferences),
@@ -781,6 +908,7 @@ class IkasPage(tk.Frame):
                 price_rules_path=price_file,
                 channel_preferences=channel_preferences,
                 logger=self._log,
+                progress_callback=self._on_automation_progress,
             )
             result = runner.run(output_dir="output")
             summary = result.get("summary", {})
@@ -818,13 +946,416 @@ class IkasPage(tk.Frame):
                     "Tüm işlem başarıyla tamamlandı.\n"
                     f"Rapor dosyası:\n{report_path}",
                 )
+            self._set_full_auto_progress(100, "Tam otomasyon bitti.")
 
         except AutomationError as e:
             self._log(f"❌ Tam otomasyon hatası: {e}")
+            self._set_full_auto_progress(
+                self.full_auto_progress.get(),
+                f"Hata: {e}",
+            )
             messagebox.showerror("Tam Otomasyon Hatası", str(e))
         except Exception as e:
             self._log(f"❌ Beklenmeyen hata: {e}")
+            self._set_full_auto_progress(
+                self.full_auto_progress.get(),
+                f"Hata: {e}",
+            )
             messagebox.showerror("Tam Otomasyon Hatası", str(e))
+        finally:
+            self._set_full_auto_running(False)
+
+    def _start_fitguide_sync(self):
+        selected = list(getattr(self, "fitguide_popup_selected", []) or [])
+        if not selected:
+            messagebox.showwarning("Uyarı", "Lütfen listeden en az bir ürün seçin.")
+            return
+
+        update_items = []
+        for p in selected:
+            pid = str((p or {}).get("id") or "").strip()
+            name = str((p or {}).get("name") or "-").strip()
+            if not pid:
+                continue
+            update_items.append(
+                {
+                    "id": pid,
+                    "name": name,
+                    "attributes": list((p or {}).get("attributes") or []),
+                }
+            )
+
+        if not update_items:
+            messagebox.showerror("Hata", "Seçilen ürünlerde geçerli ürün ID bulunamadı.")
+            return
+
+        count = len(update_items)
+        preview = "\n".join(f"- {x['name']}" for x in update_items[:8])
+        if count > 8:
+            preview += f"\n... ve {count - 8} ürün daha"
+        ok = messagebox.askyesno(
+            "Özel Alanlar Onayı",
+            (
+                f"Seçilen ürün sayısı: {count}\n\n{preview}\n\n"
+                "Sadece ölçü rehberi eksik olan ürünler güncellenir.\n"
+                "Devam etmek istiyor musunuz?"
+            ),
+        )
+        if not ok:
+            return
+
+        self._set_fitguide_sync_running(True)
+        self._set_fitguide_sync_progress(0, "Hazırlanıyor...")
+        threading.Thread(
+            target=self._sync_fitguide_logic,
+            args=(update_items,),
+            daemon=True,
+        ).start()
+
+    def _fold_text_tr(self, value):
+        text = str(value or "").strip().lower()
+        return (
+            text.replace("ı", "i")
+            .replace("ş", "s")
+            .replace("ğ", "g")
+            .replace("ç", "c")
+            .replace("ö", "o")
+            .replace("ü", "u")
+        )
+
+    def _resolve_fitguide_attribute_id(self, auth):
+        if self.fitguide_attribute_id:
+            return self.fitguide_attribute_id
+        query = """
+        query ListProductAttributes {
+          listProductAttribute {
+            id
+            name
+            type
+          }
+        }
+        """
+        data = self._ikas_graphql(auth, query)
+        attrs = data.get("listProductAttribute") or []
+        target_name = self._fold_text_tr("Ölçü Rehberi")
+        selected_id = ""
+        for item in attrs:
+            name = self._fold_text_tr((item or {}).get("name"))
+            attr_type = str((item or {}).get("type") or "").strip().upper()
+            if name == target_name and attr_type == "HTML":
+                selected_id = str((item or {}).get("id") or "").strip()
+                break
+        if not selected_id:
+            for item in attrs:
+                name = self._fold_text_tr((item or {}).get("name"))
+                if name == target_name:
+                    selected_id = str((item or {}).get("id") or "").strip()
+                    break
+        if not selected_id:
+            raise Exception(
+                "İkas'ta 'Ölçü Rehberi' özel alanı bulunamadı. "
+                "Önce panelden bu özel alanı (HTML) oluşturmalısınız."
+            )
+        self.fitguide_attribute_id = selected_id
+        self._log(f"ℹ️ Ölçü Rehberi özel alan ID bulundu: {selected_id}")
+        return selected_id
+
+    def _get_fitguide_value_from_attributes(self, attributes, attribute_id):
+        target_id = str(attribute_id or "").strip()
+        if not target_id:
+            return ""
+        for item in (attributes or []):
+            pid = str((item or {}).get("productAttributeId") or "").strip()
+            if pid != target_id:
+                continue
+            return str((item or {}).get("value") or "")
+        return ""
+
+    def _fitguide_value_exists(self, value):
+        text = str(value or "")
+        if not text.strip():
+            return False
+        if FIT_GUIDE_MARKER in text:
+            return True
+        lowered = self._fold_text_tr(re.sub(r"<[^>]+>", " ", text))
+        return ("olcu rehberi" in lowered) or ("beden ve uyum kilavuzu" in lowered)
+
+    def _search_products_for_fitguide_popup(self):
+        if not self._fitguide_popup_is_alive():
+            return
+        search = self.fitguide_search_text.get().strip()
+        if not search:
+            messagebox.showwarning("Uyarı", "Lütfen ürün adı veya anahtar kelime girin.")
+            return
+        threading.Thread(
+            target=self._search_products_for_fitguide_logic_popup,
+            args=(search,),
+            daemon=True,
+        ).start()
+
+    def _search_products_for_fitguide_logic_popup(self, search):
+        self._log(f"🔎 Ölçü rehberi paneli arama: {search}")
+        try:
+            auth = self._get_ikas_auth_header()
+            attribute_id = self._resolve_fitguide_attribute_id(auth)
+            query = """
+            query FindProducts($search: String!) {
+              listProduct(search: $search, pagination: {page: 1, limit: 25}) {
+                data {
+                  id
+                  name
+                  attributes {
+                    productAttributeId
+                    value
+                  }
+                  variants {
+                    id
+                    variantValues {
+                      variantTypeName
+                      variantValueName
+                    }
+                    attributes {
+                      productAttributeId
+                      value
+                    }
+                  }
+                }
+              }
+            }
+            """
+            data = self._ikas_graphql(auth, query, {"search": search})
+            products = ((data.get("listProduct") or {}).get("data")) or []
+            self.after(
+                0,
+                lambda: self._append_fitguide_popup_results(
+                    products, search, attribute_id
+                ),
+            )
+        except Exception as e:
+            self._log(f"❌ Ölçü rehberi paneli arama hatası: {e}")
+            self.after(0, lambda: messagebox.showerror("Arama Hatası", str(e)))
+
+    def _append_fitguide_popup_results(self, products, search, attribute_id):
+        if not self._fitguide_popup_is_alive():
+            return
+        if not products:
+            self._log(f"ℹ️ Arama sonucu yok: {search}")
+            return
+
+        existing_ids = {
+            str((p or {}).get("id") or "").strip()
+            for p in (self.fitguide_popup_results or [])
+        }
+        added = 0
+        for p in products:
+            pid = str((p or {}).get("id") or "").strip()
+            if not pid or pid in existing_ids:
+                continue
+            existing_ids.add(pid)
+            attr_value = self._get_fitguide_value_from_attributes(
+                (p or {}).get("attributes") or [],
+                attribute_id,
+            )
+            has_fitguide = self._fitguide_value_exists(attr_value)
+            p["_fitguide_has"] = has_fitguide
+            self.fitguide_popup_results.append(p)
+            name = str((p or {}).get("name") or "-")
+            variants = (p or {}).get("variants") or []
+            missing_variant_count = 0
+            for v in variants:
+                v_value = self._get_fitguide_value_from_attributes(
+                    (v or {}).get("attributes") or [],
+                    attribute_id,
+                )
+                if not self._fitguide_value_exists(v_value):
+                    missing_variant_count += 1
+            if variants:
+                status_text = "VAR" if missing_variant_count == 0 else f"EKSIK({missing_variant_count} varyant)"
+            else:
+                status_text = "VAR" if has_fitguide else "YOK"
+            self.fitguide_popup_list.insert(
+                tk.END,
+                f"{name} | ölçü rehberi:{status_text} | id:{pid}",
+            )
+            added += 1
+
+        if added == 0:
+            self._log(f"ℹ️ Arama sonucu zaten listede: {search}")
+        else:
+            self._log(f"✅ Listeye {added} ürün eklendi. (Arama: {search})")
+
+    def _clear_fitguide_popup_list(self):
+        if not self._fitguide_popup_is_alive():
+            return
+        self.fitguide_popup_results = []
+        self.fitguide_popup_selected = []
+        if self.fitguide_popup_list is not None:
+            self.fitguide_popup_list.delete(0, tk.END)
+        if self.fitguide_popup_label is not None:
+            self.fitguide_popup_label.config(text="Seçili ürün sayısı: 0")
+        self.fitguide_progress_text.set("Hazır")
+        self.fitguide_progress.set(0.0)
+        self._log("🧹 Ölçü rehberi listesi temizlendi.")
+
+    def _on_fitguide_popup_select(self, _event=None):
+        if not self._fitguide_popup_is_alive() or self.fitguide_popup_list is None:
+            return
+        indices = list(self.fitguide_popup_list.curselection())
+        if not indices:
+            self.fitguide_popup_selected = []
+            if self.fitguide_popup_label is not None:
+                self.fitguide_popup_label.config(text="Seçili ürün sayısı: 0")
+            return
+
+        selected = []
+        for idx in indices:
+            if idx < len(self.fitguide_popup_results):
+                selected.append(self.fitguide_popup_results[idx])
+        self.fitguide_popup_selected = selected
+
+        count = len(selected)
+        preview_names = [str((p or {}).get("name", "-")) for p in selected[:3]]
+        more = "" if count <= 3 else f" (+{count - 3} ürün daha)"
+        if self.fitguide_popup_label is not None:
+            self.fitguide_popup_label.config(
+                text=f"Seçili ürün sayısı: {count} | {', '.join(preview_names)}{more}"
+            )
+
+    def _sync_fitguide_logic(self, products):
+        self._log("🧩 Özel Alanlar > Ölçü Rehberi işlemi başlatıldı...")
+        try:
+            auth = self._get_ikas_auth_header()
+            attribute_id = self._resolve_fitguide_attribute_id(auth)
+            total = len(products)
+            if total == 0:
+                self._set_fitguide_sync_progress(100, "Ürün bulunamadı.")
+                self.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Bilgi",
+                        "Güncellenecek ürün bulunamadı.",
+                    ),
+                )
+                return
+
+            self._log(f"🔎 Ölçü rehberi taraması başladı. Ürün sayısı: {total}")
+            update_mutation = """
+            mutation UpdateProductAndVariantAttributes($input: UpdateProductAndVariantAttributesInput!) {
+              updateProductAndVariantAttributes(input: $input) {
+                id
+                name
+              }
+            }
+            """
+
+            updated = 0
+            skipped = 0
+            failed = 0
+
+            for idx, product in enumerate(products, start=1):
+                pid = str((product or {}).get("id") or "").strip()
+                name = str((product or {}).get("name") or "-").strip()
+                attributes = (product or {}).get("attributes") or []
+
+                percent = (idx / total) * 100.0
+                self._set_fitguide_sync_progress(
+                    percent,
+                    f"[{idx}/{total}] Kontrol ediliyor: {name}",
+                )
+
+                if not pid:
+                    failed += 1
+                    self._log(f"❌ Ürün id eksik, atlandı: {name}")
+                    continue
+
+                existing_value = self._get_fitguide_value_from_attributes(
+                    attributes, attribute_id
+                )
+                product_needs_update = not self._fitguide_value_exists(existing_value)
+
+                variants = (product or {}).get("variants") or []
+                variant_inputs = []
+                for variant in variants:
+                    variant_id = str((variant or {}).get("id") or "").strip()
+                    if not variant_id:
+                        continue
+                    variant_value = self._get_fitguide_value_from_attributes(
+                        (variant or {}).get("attributes") or [],
+                        attribute_id,
+                    )
+                    if self._fitguide_value_exists(variant_value):
+                        continue
+                    variant_inputs.append(
+                        {
+                            "variantId": variant_id,
+                            "attributes": [
+                                {
+                                    "productAttributeId": attribute_id,
+                                    "value": FIT_GUIDE_HTML,
+                                }
+                            ],
+                        }
+                    )
+
+                if (not product_needs_update) and (len(variant_inputs) == 0):
+                    skipped += 1
+                    self._log(f"⏭️ Zaten var, atlandı: {name}")
+                    continue
+
+                try:
+                    product_attrs_payload = []
+                    if product_needs_update:
+                        product_attrs_payload = [
+                            {
+                                "productAttributeId": attribute_id,
+                                "value": FIT_GUIDE_HTML,
+                            }
+                        ]
+                    data = self._ikas_graphql(
+                        auth,
+                        update_mutation,
+                        {
+                            "input": {
+                                "productId": pid,
+                                "productAttributes": product_attrs_payload,
+                                "variantAttributes": variant_inputs,
+                            }
+                        },
+                    )
+                    updated_product = (data or {}).get("updateProductAndVariantAttributes")
+                    if not updated_product:
+                        raise Exception("Özel alan güncelleme yanıtı boş döndü.")
+                    updated += 1
+                    self._log(
+                        f"✅ Ölçü rehberi özel alana yazıldı: {name} "
+                        f"(ürün:{'evet' if product_needs_update else 'hayır'}, varyant:{len(variant_inputs)})"
+                    )
+                except Exception as e:
+                    failed += 1
+                    self._log(f"❌ Özel alan güncellenemedi: {name} -> {e}")
+
+            summary_text = (
+                f"İşlem tamamlandı.\n\n"
+                f"Taranan ürün: {total}\n"
+                f"Güncellenen: {updated}\n"
+                f"Zaten vardı (atlandı): {skipped}\n"
+                f"Hata: {failed}"
+            )
+            self._log(
+                "📌 Ölçü rehberi özeti => "
+                f"Taranan: {total} | Güncellenen: {updated} | Atlanan: {skipped} | Hata: {failed}"
+            )
+            self._set_fitguide_sync_progress(100, "Ölçü rehberi işlemi bitti.")
+            self.after(0, lambda: messagebox.showinfo("İşlem Bitti", summary_text))
+        except Exception as e:
+            self._log(f"❌ Ölçü rehberi işlemi hatası: {e}")
+            self._set_fitguide_sync_progress(
+                self.fitguide_progress.get(),
+                f"Hata: {e}",
+            )
+            self.after(0, lambda: messagebox.showerror("Hata", str(e)))
+        finally:
+            self._set_fitguide_sync_running(False)
 
     def _generate_excel(self):
         import pandas as pd
@@ -1068,6 +1599,726 @@ class IkasPage(tk.Frame):
         self._log("✨ İşlem Tamamlandı!")
         messagebox.showinfo("Bitti", "Yükleme tamamlandı.")
 
+    def _normalize_name(self, value):
+        return str(value or "").strip().lower()
+
+    def _get_ikas_auth_header(self):
+        config = load_config()
+        mcp_token = str(config.get("ikas_mcp_token", "") or "").strip()
+        if mcp_token:
+            if mcp_token.lower().startswith("bearer "):
+                return mcp_token
+            return f"Bearer {mcp_token}"
+
+        store_name = str(config.get("store_name", "")).strip()
+        client_id = str(config.get("client_id", "")).strip()
+        client_secret = str(config.get("client_secret", "")).strip()
+        if not (store_name and client_id and client_secret):
+            raise Exception("İkas kimlik bilgileri eksik. Ayarlar sayfasını kontrol edin.")
+
+        auth_url = f"https://{store_name}.myikas.com/api/admin/oauth/token"
+        res = requests.post(
+            auth_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=(10, 120),
+        )
+        res.raise_for_status()
+        access_token = (res.json() or {}).get("access_token")
+        if not access_token:
+            raise Exception("OAuth token alınamadı.")
+        return f"Bearer {access_token}"
+
+    def _ikas_graphql(self, auth_header, query, variables=None):
+        payload = {"query": query}
+        if variables:
+            payload["variables"] = variables
+        res = requests.post(
+            "https://api.myikas.com/api/v2/admin/graphql",
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            json=payload,
+            timeout=(10, 120),
+        )
+        if res.status_code != 200:
+            raise Exception(f"GraphQL HTTP hatası: {res.status_code}")
+        body = res.json()
+        errors = body.get("errors") or []
+        if errors:
+            raise Exception(errors[0].get("message", "GraphQL hatası"))
+        return body.get("data") or {}
+
+    def _search_products_for_delete(self):
+        search = self.delete_search_text.get().strip()
+        if not search:
+            messagebox.showwarning("Uyarı", "Lütfen ürün adı veya anahtar kelime girin.")
+            return
+        self.list_delete_results.delete(0, tk.END)
+        self.delete_results = []
+        self.delete_selected_product = None
+        self.lbl_delete_selection.config(text="Seçili ürün: -")
+        threading.Thread(target=self._search_products_for_delete_logic, args=(search,), daemon=True).start()
+
+    def _search_products_for_delete_logic(self, search):
+        self._log(f"🔎 Ürün aranıyor: {search}")
+        try:
+            auth = self._get_ikas_auth_header()
+            query = """
+            query FindProducts($search: String!) {
+              listProduct(search: $search, pagination: {page: 1, limit: 25}) {
+                data {
+                  id
+                  name
+                  variants { id }
+                }
+              }
+            }
+            """
+            data = self._ikas_graphql(auth, query, {"search": search})
+            products = ((data.get("listProduct") or {}).get("data")) or []
+            self.delete_results = products
+
+            def _fill():
+                self.list_delete_results.delete(0, tk.END)
+                if not products:
+                    self.list_delete_results.insert(tk.END, "Sonuç bulunamadı.")
+                    return
+                for p in products:
+                    name = p.get("name", "-")
+                    pid = p.get("id", "-")
+                    vcount = len(p.get("variants") or [])
+                    self.list_delete_results.insert(
+                        tk.END, f"{name} | varyant:{vcount} | id:{pid}"
+                    )
+
+            self.after(0, _fill)
+            self._log(f"✅ Arama tamamlandı. Sonuç: {len(products)} ürün")
+        except Exception as e:
+            self._log(f"❌ Ürün arama hatası: {e}")
+            self.after(0, lambda: messagebox.showerror("Arama Hatası", str(e)))
+
+    def _on_delete_result_select(self, _event=None):
+        sel = self.list_delete_results.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= len(self.delete_results):
+            return
+        self.delete_selected_product = self.delete_results[idx]
+        name = self.delete_selected_product.get("name", "-")
+        pid = self.delete_selected_product.get("id", "-")
+        self.lbl_delete_selection.config(text=f"Seçili ürün: {name} ({pid})")
+
+    def _delete_selected_product(self):
+        product = self.delete_selected_product
+        if not product:
+            messagebox.showwarning("Uyarı", "Lütfen önce listeden bir ürün seçin.")
+            return
+
+        name = str(product.get("name", "")).strip()
+        pid = str(product.get("id", "")).strip()
+        if not (name and pid):
+            messagebox.showerror("Hata", "Seçilen ürün bilgisi eksik.")
+            return
+
+        ok = messagebox.askyesno(
+            "Silme Onayı",
+            f"Sadece bu ürün silinecek:\n\n{name}\n\nDevam etmek istiyor musunuz?",
+        )
+        if not ok:
+            return
+
+        typed = simpledialog.askstring(
+            "Son Onay",
+            f"Yanlışlıkla silmeyi önlemek için ürün adını aynen yazın:\n\n{name}",
+            parent=self,
+        )
+        if typed is None:
+            return
+        if self._normalize_name(typed) != self._normalize_name(name):
+            messagebox.showwarning("Uyarı", "Ürün adı eşleşmedi. Silme iptal edildi.")
+            return
+
+        threading.Thread(target=self._delete_selected_product_logic, args=(pid, name), daemon=True).start()
+
+    def _delete_selected_product_logic(self, product_id, product_name):
+        self._log(f"🗑️ Silme başlatıldı: {product_name}")
+        try:
+            auth = self._get_ikas_auth_header()
+            mutation = """
+            mutation DeleteProduct($idList: [String!]!) {
+              deleteProductList(idList: $idList)
+            }
+            """
+            self._ikas_graphql(auth, mutation, {"idList": [product_id]})
+            self._log(f"✅ Ürün silindi: {product_name}")
+            self.after(0, lambda: messagebox.showinfo("Başarılı", f"Ürün silindi:\n{product_name}"))
+
+            # refresh list after delete
+            search = self.delete_search_text.get().strip()
+            if search:
+                self.after(0, self._search_products_for_delete)
+        except Exception as e:
+            self._log(f"❌ Ürün silme hatası: {e}")
+            self.after(0, lambda: messagebox.showerror("Silme Hatası", str(e)))
+
+    def _fitguide_popup_is_alive(self):
+        popup = getattr(self, "fitguide_popup_window", None)
+        if not popup:
+            return False
+        try:
+            return bool(popup.winfo_exists())
+        except Exception:
+            return False
+
+    def _open_fitguide_popup(self):
+        if self._fitguide_popup_is_alive():
+            self.fitguide_popup_window.lift()
+            self.fitguide_popup_window.focus_force()
+            return
+
+        popup = tk.Toplevel(self)
+        popup.title("Özel Alanlar")
+        popup.geometry("930x610")
+        popup.configure(bg=COLOR_BG)
+        popup.transient(self.winfo_toplevel())
+        self.fitguide_popup_window = popup
+        self.fitguide_popup_results = []
+        self.fitguide_popup_selected = []
+
+        frame = tk.Frame(popup, bg=COLOR_BG)
+        frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+
+        title = tk.Label(
+            frame,
+            text="Özel Alanlar",
+            bg=COLOR_BG,
+            fg=COLOR_ACCENT,
+            font=("Segoe UI", 14, "bold"),
+            anchor="w",
+        )
+        title.pack(anchor="w")
+
+        subtitle = tk.Label(
+            frame,
+            text="Özel Alan Seçimi",
+            bg=COLOR_BG,
+            fg=COLOR_WARNING,
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+        )
+        subtitle.pack(anchor="w", pady=(2, 0))
+
+        desc = tk.Label(
+            frame,
+            text=(
+                "Aşağıdaki butonlardan bir özel alan seçin. "
+                "Sonrasında o alana ait araçlar açılır.\n"
+                "Şimdilik aktif araç: Ölçü Rehberi HTML"
+            ),
+            bg=COLOR_BG,
+            fg="#d2d2d2",
+            justify="left",
+            wraplength=900,
+            anchor="w",
+        )
+        desc.pack(anchor="w", fill=tk.X, pady=(6, 10))
+
+        tools_row = tk.Frame(frame, bg=COLOR_BG)
+        tools_row.pack(fill=tk.X, pady=(0, 8))
+
+        btn_fitguide_tool = tk.Button(
+            tools_row,
+            text="Ölçü Rehberi HTML",
+            command=self._show_fitguide_feature,
+            bg=COLOR_SECONDARY,
+            fg=COLOR_FG,
+            bd=0,
+            padx=10,
+            pady=7,
+            cursor="hand2",
+        )
+        btn_fitguide_tool.pack(side=tk.LEFT, padx=(0, 8))
+
+        btn_future_tool = tk.Button(
+            tools_row,
+            text="XXX (Yakında)",
+            state="disabled",
+            bg="#2d2d3f",
+            fg="#909090",
+            bd=0,
+            padx=10,
+            pady=7,
+        )
+        btn_future_tool.pack(side=tk.LEFT)
+
+        self.fitguide_hint_label = tk.Label(
+            frame,
+            text="İşleme devam etmek için üstten `Ölçü Rehberi HTML` butonuna tıkla.",
+            bg=COLOR_BG,
+            fg="#9aa0b3",
+            anchor="w",
+            justify="left",
+        )
+        self.fitguide_hint_label.pack(fill=tk.X, pady=(4, 10))
+
+        self.fitguide_feature_frame = tk.Frame(frame, bg=COLOR_SECONDARY, padx=12, pady=12)
+
+        feature_title = tk.Label(
+            self.fitguide_feature_frame,
+            text="Ölçü Rehberi HTML",
+            bg=COLOR_SECONDARY,
+            fg=COLOR_ACCENT,
+            font=("Segoe UI", 12, "bold"),
+            anchor="w",
+        )
+        feature_title.pack(fill=tk.X)
+
+        feature_desc = tk.Label(
+            self.fitguide_feature_frame,
+            text=(
+                "Ürün adıyla ara, sonuçları listeye ekle ve çoklu seçim yap. "
+                "İşlem yalnızca seçtiğin ürünlerde çalışır."
+            ),
+            bg=COLOR_SECONDARY,
+            fg="#d2d2d2",
+            justify="left",
+            wraplength=860,
+            anchor="w",
+        )
+        feature_desc.pack(fill=tk.X, pady=(4, 10))
+
+        row = tk.Frame(self.fitguide_feature_frame, bg=COLOR_SECONDARY)
+        row.pack(fill=tk.X)
+
+        entry = tk.Entry(
+            row,
+            textvariable=self.fitguide_search_text,
+            bg="#555",
+            fg="white",
+            bd=0,
+        )
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6, padx=(0, 10))
+
+        btn_search = ttk.Button(
+            row,
+            text="Ürün Ara",
+            command=self._search_products_for_fitguide_popup,
+        )
+        btn_search.pack(side=tk.RIGHT, padx=(6, 0))
+
+        btn_clear = ttk.Button(
+            row,
+            text="Listeyi Temizle",
+            command=self._clear_fitguide_popup_list,
+        )
+        btn_clear.pack(side=tk.RIGHT)
+
+        list_wrap = tk.Frame(self.fitguide_feature_frame, bg=COLOR_SECONDARY)
+        list_wrap.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+
+        self.fitguide_popup_list = tk.Listbox(
+            list_wrap,
+            height=12,
+            selectmode=tk.EXTENDED,
+            exportselection=False,
+            bg=COLOR_BG,
+            fg=COLOR_FG,
+            selectbackground=COLOR_ACCENT,
+            selectforeground=COLOR_FG,
+            bd=0,
+        )
+        self.fitguide_popup_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.fitguide_popup_list.bind("<<ListboxSelect>>", self._on_fitguide_popup_select)
+
+        scroll = tk.Scrollbar(list_wrap, command=self.fitguide_popup_list.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.fitguide_popup_list.config(yscrollcommand=scroll.set)
+
+        self.fitguide_popup_label = tk.Label(
+            self.fitguide_feature_frame,
+            text="Seçili ürün sayısı: 0",
+            bg=COLOR_SECONDARY,
+            fg=COLOR_WARNING,
+            justify="left",
+            anchor="w",
+        )
+        self.fitguide_popup_label.pack(fill=tk.X, pady=(10, 6))
+
+        self.btn_fitguide_sync = ttk.Button(
+            self.fitguide_feature_frame,
+            text="Seçili Ürünlere Ölçü Rehberi Ekle",
+            command=self._start_fitguide_sync,
+        )
+        self.btn_fitguide_sync.pack(fill=tk.X)
+
+        status_label = tk.Label(
+            self.fitguide_feature_frame,
+            textvariable=self.fitguide_progress_text,
+            bg=COLOR_SECONDARY,
+            fg=COLOR_WARNING,
+            justify="left",
+            wraplength=860,
+            anchor="w",
+        )
+        status_label.pack(fill=tk.X, pady=(10, 4))
+
+        progressbar = ttk.Progressbar(
+            self.fitguide_feature_frame,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
+            variable=self.fitguide_progress,
+        )
+        progressbar.pack(fill=tk.X)
+
+        def _on_close():
+            self.btn_fitguide_sync = None
+            self.fitguide_popup_window = None
+            self.fitguide_popup_list = None
+            self.fitguide_popup_label = None
+            self.fitguide_feature_frame = None
+            self.fitguide_hint_label = None
+            self.fitguide_attribute_id = ""
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+
+        popup.protocol("WM_DELETE_WINDOW", _on_close)
+
+    def _show_fitguide_feature(self):
+        if not self._fitguide_popup_is_alive():
+            return
+        if self.fitguide_hint_label is not None:
+            try:
+                self.fitguide_hint_label.pack_forget()
+            except Exception:
+                pass
+        if self.fitguide_feature_frame is not None:
+            self.fitguide_feature_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
+
+    def _popup_is_alive(self):
+        popup = getattr(self, "delete_popup_window", None)
+        if not popup:
+            return False
+        try:
+            return bool(popup.winfo_exists())
+        except Exception:
+            return False
+
+    def _open_delete_popup(self):
+        if self._popup_is_alive():
+            self.delete_popup_window.lift()
+            self.delete_popup_window.focus_force()
+            return
+
+        popup = tk.Toplevel(self)
+        popup.title("İkas Ürün Silme (Güvenli)")
+        popup.geometry("900x500")
+        popup.configure(bg=COLOR_BG)
+        popup.transient(self.winfo_toplevel())
+
+        self.delete_popup_window = popup
+        self.delete_popup_results = []
+        self.delete_popup_selected = []
+        self.delete_popup_search_text = tk.StringVar()
+
+        frame = tk.Frame(popup, bg=COLOR_BG)
+        frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+
+        title = tk.Label(
+            frame,
+            text="Ürün Silme (Çoklu Seçim + Güvenli)",
+            bg=COLOR_BG,
+            fg=COLOR_ERROR,
+            font=("Segoe UI", 14, "bold"),
+        )
+        title.pack(anchor="w")
+
+        desc = tk.Label(
+            frame,
+            text=(
+                "Listeden bir veya birden fazla ürün seçebilirsiniz. "
+                "Arama sonuçları listeye eklenir. Silmeden önce güçlü onay gerekir."
+            ),
+            bg=COLOR_BG,
+            fg="#aaaaaa",
+            justify="left",
+            wraplength=840,
+        )
+        desc.pack(anchor="w", pady=(4, 12))
+
+        row = tk.Frame(frame, bg=COLOR_BG)
+        row.pack(fill=tk.X)
+
+        entry = tk.Entry(
+            row,
+            textvariable=self.delete_popup_search_text,
+            bg="#555",
+            fg="white",
+            bd=0,
+        )
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6, padx=(0, 10))
+
+        btn_search = ttk.Button(
+            row,
+            text="Ürün Ara",
+            command=self._search_products_for_delete_popup,
+        )
+        btn_search.pack(side=tk.RIGHT, padx=(6, 0))
+
+        btn_clear = ttk.Button(
+            row,
+            text="Listeyi Temizle",
+            command=self._clear_delete_popup_list,
+        )
+        btn_clear.pack(side=tk.RIGHT)
+
+        list_wrap = tk.Frame(frame, bg=COLOR_BG)
+        list_wrap.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+
+        self.delete_popup_list = tk.Listbox(
+            list_wrap,
+            height=12,
+            selectmode=tk.EXTENDED,
+            exportselection=False,
+            bg=COLOR_SECONDARY,
+            fg=COLOR_FG,
+            selectbackground=COLOR_ACCENT,
+            selectforeground=COLOR_FG,
+            bd=0,
+        )
+        self.delete_popup_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.delete_popup_list.bind("<<ListboxSelect>>", self._on_delete_popup_select)
+
+        scroll = tk.Scrollbar(list_wrap, command=self.delete_popup_list.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.delete_popup_list.config(yscrollcommand=scroll.set)
+
+        self.delete_popup_label = tk.Label(
+            frame,
+            text="Seçili ürün sayısı: 0",
+            bg=COLOR_BG,
+            fg=COLOR_WARNING,
+            anchor="w",
+        )
+        self.delete_popup_label.pack(fill=tk.X, pady=(10, 8))
+
+        btn_delete = tk.Button(
+            frame,
+            text="Seçili Ürünleri Sil",
+            command=self._delete_selected_product_popup,
+            bg=COLOR_ERROR,
+            fg="white",
+            bd=0,
+            padx=12,
+            pady=8,
+        )
+        btn_delete.pack(anchor="e")
+
+    def _search_products_for_delete_popup(self):
+        if not self._popup_is_alive():
+            return
+        search = self.delete_popup_search_text.get().strip()
+        if not search:
+            messagebox.showwarning("Uyarı", "Lütfen ürün adı veya anahtar kelime girin.")
+            return
+        threading.Thread(
+            target=self._search_products_for_delete_logic_popup,
+            args=(search,),
+            daemon=True,
+        ).start()
+
+    def _search_products_for_delete_logic_popup(self, search):
+        self._log(f"🔎 Silme paneli arama: {search}")
+        try:
+            auth = self._get_ikas_auth_header()
+            query = """
+            query FindProducts($search: String!) {
+              listProduct(search: $search, pagination: {page: 1, limit: 25}) {
+                data {
+                  id
+                  name
+                  variants { id }
+                }
+              }
+            }
+            """
+            data = self._ikas_graphql(auth, query, {"search": search})
+            products = ((data.get("listProduct") or {}).get("data")) or []
+            self.after(0, lambda: self._append_delete_popup_results(products, search))
+        except Exception as e:
+            self._log(f"❌ Silme paneli arama hatası: {e}")
+            self.after(0, lambda: messagebox.showerror("Arama Hatası", str(e)))
+
+    def _append_delete_popup_results(self, products, search):
+        if not self._popup_is_alive():
+            return
+        if not products:
+            self._log(f"ℹ️ Arama sonucu yok: {search}")
+            return
+
+        existing_ids = {
+            str((p or {}).get("id") or "").strip()
+            for p in (self.delete_popup_results or [])
+        }
+        added = 0
+        for p in products:
+            pid = str((p or {}).get("id") or "").strip()
+            if not pid or pid in existing_ids:
+                continue
+            existing_ids.add(pid)
+            self.delete_popup_results.append(p)
+            name = p.get("name", "-")
+            vcount = len(p.get("variants") or [])
+            self.delete_popup_list.insert(
+                tk.END, f"{name} | varyant:{vcount} | id:{pid}"
+            )
+            added += 1
+
+        if added == 0:
+            self._log(f"ℹ️ Arama sonucu zaten listede: {search}")
+        else:
+            self._log(f"✅ Listeye {added} ürün eklendi. (Arama: {search})")
+
+    def _clear_delete_popup_list(self):
+        if not self._popup_is_alive():
+            return
+        self.delete_popup_results = []
+        self.delete_popup_selected = []
+        self.delete_popup_list.delete(0, tk.END)
+        self.delete_popup_label.config(text="Seçili ürün sayısı: 0")
+        self._log("🧹 Silme paneli liste temizlendi.")
+
+    def _on_delete_popup_select(self, _event=None):
+        if not self._popup_is_alive():
+            return
+        indices = list(self.delete_popup_list.curselection())
+        if not indices:
+            self.delete_popup_selected = []
+            self.delete_popup_label.config(text="Seçili ürün sayısı: 0")
+            return
+        selected = []
+        for idx in indices:
+            if idx < len(self.delete_popup_results):
+                selected.append(self.delete_popup_results[idx])
+        self.delete_popup_selected = selected
+        count = len(selected)
+        if count == 0:
+            self.delete_popup_label.config(text="Seçili ürün sayısı: 0")
+            return
+        preview_names = [str((p or {}).get("name", "-")) for p in selected[:3]]
+        more = "" if count <= 3 else f" (+{count - 3} ürün daha)"
+        self.delete_popup_label.config(
+            text=f"Seçili ürün sayısı: {count} | {', '.join(preview_names)}{more}"
+        )
+
+    def _delete_selected_product_popup(self):
+        products = list(getattr(self, "delete_popup_selected", []) or [])
+        if not products:
+            messagebox.showwarning("Uyarı", "Lütfen listeden en az bir ürün seçin.")
+            return
+
+        delete_items = []
+        for product in products:
+            name = str((product or {}).get("name", "")).strip()
+            pid = str((product or {}).get("id", "")).strip()
+            if not (name and pid):
+                continue
+            delete_items.append({"id": pid, "name": name})
+
+        if not delete_items:
+            messagebox.showerror("Hata", "Seçili ürün bilgileri eksik.")
+            return
+
+        count = len(delete_items)
+        preview = "\n".join(f"- {x['name']}" for x in delete_items[:10])
+        if count > 10:
+            preview += f"\n... ve {count - 10} ürün daha"
+        ok = messagebox.askyesno(
+            "Silme Onayı",
+            f"Aşağıdaki {count} ürün silinecek:\n\n{preview}\n\nDevam etmek istiyor musunuz?",
+        )
+        if not ok:
+            return
+
+        typed = simpledialog.askstring(
+            "Son Onay",
+            f"Yanlışlıkla silmeyi önlemek için şu ifadeyi yazın:\n\nSIL {count}",
+            parent=self,
+        )
+        if typed is None:
+            return
+        if self._normalize_name(typed) != self._normalize_name(f"SIL {count}"):
+            messagebox.showwarning("Uyarı", "Doğrulama ifadesi eşleşmedi. Silme iptal edildi.")
+            return
+
+        threading.Thread(
+            target=self._delete_selected_product_logic_popup,
+            args=(delete_items,),
+            daemon=True,
+        ).start()
+
+    def _delete_selected_product_logic_popup(self, delete_items):
+        self._log(f"🗑️ Silme paneli toplu silme başlatıldı. Ürün sayısı: {len(delete_items)}")
+        try:
+            auth = self._get_ikas_auth_header()
+            mutation = """
+            mutation DeleteProduct($idList: [String!]!) {
+              deleteProductList(idList: $idList)
+            }
+            """
+            deleted = 0
+            failed = []
+            total = len(delete_items)
+            for i, item in enumerate(delete_items, start=1):
+                pid = item["id"]
+                name = item["name"]
+                self._log(f"⏳ [{i}/{total}] Siliniyor: {name}")
+                try:
+                    self._ikas_graphql(auth, mutation, {"idList": [pid]})
+                    deleted += 1
+                    self._log(f"✅ Silindi: {name}")
+                except Exception as e:
+                    failed.append((name, str(e)))
+                    self._log(f"❌ Silinemedi: {name} -> {e}")
+
+            if failed:
+                msg = (
+                    f"İşlem bitti.\n\nSilinen: {deleted}\nHata: {len(failed)}\n\n"
+                    f"İlk hata: {failed[0][0]} -> {failed[0][1]}"
+                )
+                self.after(0, lambda: messagebox.showwarning("Silme Sonucu", msg))
+            else:
+                self.after(0, lambda: messagebox.showinfo("Başarılı", f"Tüm seçili ürünler silindi.\nAdet: {deleted}"))
+
+            def _refresh():
+                if self._popup_is_alive():
+                    deleted_ids = {str(item.get("id")) for item in delete_items}
+                    self.delete_popup_results = [
+                        p for p in (self.delete_popup_results or [])
+                        if str((p or {}).get("id") or "") not in deleted_ids
+                    ]
+                    self.delete_popup_selected = []
+                    self.delete_popup_label.config(text="Seçili ürün sayısı: 0")
+                    self.delete_popup_list.delete(0, tk.END)
+                    for p in self.delete_popup_results:
+                        name = p.get("name", "-")
+                        pid = p.get("id", "-")
+                        vcount = len(p.get("variants") or [])
+                        self.delete_popup_list.insert(
+                            tk.END, f"{name} | varyant:{vcount} | id:{pid}"
+                        )
+
+            self.after(0, _refresh)
+        except Exception as e:
+            self._log(f"❌ Silme paneli ürün silme hatası: {e}")
+            self.after(0, lambda: messagebox.showerror("Silme Hatası", str(e)))
+
 class PreviewDialog(tk.Toplevel):
     def __init__(self, parent, title, columns, data):
         super().__init__(parent)
@@ -1264,6 +2515,24 @@ class SettingsPage(tk.Frame):
         self.entry_store = tk.Entry(api_frame, bg=COLOR_SECONDARY, fg=COLOR_FG, bd=0, width=40)
         self.entry_store.grid(row=6, column=1, padx=10, pady=5)
 
+        # Ikas Automation Metadata
+        tk.Label(api_frame, text="İkas Google Kategori ID:", bg=COLOR_BG, fg=COLOR_FG).grid(row=7, column=0, padx=10, pady=5, sticky="w")
+        self.entry_ikas_google_taxonomy = tk.Entry(api_frame, bg=COLOR_SECONDARY, fg=COLOR_FG, bd=0, width=40)
+        self.entry_ikas_google_taxonomy.grid(row=7, column=1, padx=10, pady=5)
+
+        self.var_ikas_ai_description_enabled = tk.BooleanVar(value=True)
+        chk_ai_desc = tk.Checkbutton(
+            api_frame,
+            text="İkas ürün açıklamasını AI ile üret (OpenAI/Gemini)",
+            variable=self.var_ikas_ai_description_enabled,
+            bg=COLOR_BG,
+            fg=COLOR_FG,
+            selectcolor=COLOR_SECONDARY,
+            activebackground=COLOR_BG,
+            activeforeground=COLOR_FG,
+        )
+        chk_ai_desc.grid(row=8, column=0, columnspan=2, padx=10, pady=(8, 5), sticky="w")
+
         btn_save = ttk.Button(self, text="Ayarları Kaydet", command=self._save_settings)
         btn_save.pack(anchor="e", pady=20)
         
@@ -1272,9 +2541,18 @@ class SettingsPage(tk.Frame):
     def _load_settings(self):
         if os.path.exists(CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, "r") as f:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    
+
+                self.entry_ikas_id.delete(0, tk.END)
+                self.entry_ikas_secret.delete(0, tk.END)
+                self.entry_store.delete(0, tk.END)
+                self.entry_wiro.delete(0, tk.END)
+                self.entry_gemini.delete(0, tk.END)
+                self.entry_openai.delete(0, tk.END)
+                self.entry_custom.delete(0, tk.END)
+                self.entry_ikas_google_taxonomy.delete(0, tk.END)
+
                 self.entry_ikas_id.insert(0, data.get("client_id", ""))
                 self.entry_ikas_secret.insert(0, data.get("client_secret", ""))
                 self.entry_store.insert(0, data.get("store_name", "kepekcioptik"))
@@ -1282,11 +2560,25 @@ class SettingsPage(tk.Frame):
                 self.entry_gemini.insert(0, data.get("gemini_api_key", ""))
                 self.entry_openai.insert(0, data.get("openai_api_key", ""))
                 self.entry_custom.insert(0, data.get("custom_api_url", ""))
+                self.entry_ikas_google_taxonomy.insert(
+                    0, str(data.get("ikas_google_taxonomy_id", "178") or "178")
+                )
                 self.var_ai_mode.set(data.get("ai_mode", "local"))
+                self.var_ikas_ai_description_enabled.set(
+                    bool(data.get("ikas_ai_description_enabled", True))
+                )
             except Exception as e:
                 print(f"Config yüklenemedi: {e}")
 
     def _save_settings(self):
+        google_taxonomy_id = self.entry_ikas_google_taxonomy.get().strip() or "178"
+        if not re.fullmatch(r"\d+", google_taxonomy_id):
+            messagebox.showwarning(
+                "Uyarı",
+                "Google Kategori ID sadece rakamlardan oluşmalı (örn: 178).",
+            )
+            return
+
         data = {
             "client_id": self.entry_ikas_id.get().strip(),
             "client_secret": self.entry_ikas_secret.get().strip(),
@@ -1295,7 +2587,9 @@ class SettingsPage(tk.Frame):
             "gemini_api_key": self.entry_gemini.get().strip(),
             "openai_api_key": self.entry_openai.get().strip(),
             "custom_api_url": self.entry_custom.get().strip(),
-            "ai_mode": self.var_ai_mode.get()
+            "ai_mode": self.var_ai_mode.get(),
+            "ikas_google_taxonomy_id": google_taxonomy_id,
+            "ikas_ai_description_enabled": bool(self.var_ikas_ai_description_enabled.get()),
         }
         
         try:

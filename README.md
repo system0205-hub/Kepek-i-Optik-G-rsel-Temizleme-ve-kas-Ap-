@@ -33,7 +33,7 @@ Bu yazilim, Kepekci Optik icin gelistirilmis gorsel temizleme ve Ikas otomasyon 
 - Kanal secimi yapin (`Storefront`, `Trendyol`).
 - `Tam Otomasyonu Baslat` butonuna basin.
 - Sistem tek adimda su islemleri yapar:
-  `output` tarama -> fiyat eslestirme -> create/upsert -> gorsel yukleme -> rapor.
+  `output` tarama -> fiyat eslestirme -> create/upsert -> urun metadata guncelleme -> gorsel yukleme -> rapor.
 
 Fiyat dosyasi kolonlari:
 - `Marka`
@@ -46,6 +46,12 @@ Notlar:
 - `Model` bos ise marka fallback kurali uygulanir.
 - Fiyat eslesmeyen urunler atlanir ve loga yazilir.
 - Mevcut varyantta gorsel varsa tekrar yuklenmez.
+- Urun metadata otomatik doldurulur:
+  - `Marka`: klasor adindan cikarilan marka
+  - `Kategori`: her zaman `Gunes Gozlugu`, ad icinde cocuk/polarize geciyorsa `Cocuk` ve `Polarize` eklenir
+  - `Etiket`: marka/model + `Gunes Gozlugu` + opsiyonel `Cocuk`/`Polarize`
+  - `Google Kategori`: varsayilan `178`
+  - `Aciklama`: OpenAI/Gemini key varsa AI ile; yoksa otomatik fallback metin
 
 #### Adim 1: Excel Olustur
 - `output` klasorundeki urunlerden Ikas import dosyasi olusturur.

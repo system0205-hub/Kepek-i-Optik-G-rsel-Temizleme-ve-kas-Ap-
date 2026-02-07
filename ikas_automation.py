@@ -6,6 +6,7 @@ Output klasorunden urunleri okuyup upsert + gorsel yukleme yapar.
 
 import base64
 import csv
+import html
 import os
 import re
 from dataclasses import dataclass
@@ -19,6 +20,54 @@ import requests
 V2_GRAPHQL_URL = "https://api.myikas.com/api/v2/admin/graphql"
 IMAGE_UPLOAD_URL = "https://api.myikas.com/api/v1/admin/product/upload/image"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+DEFAULT_GOOGLE_TAXONOMY_ID = "178"
+
+BASE_CATEGORY_NAME = "Güneş Gözlüğü"
+CHILD_CATEGORY_NAME = "Çocuk"
+POLARIZED_CATEGORY_NAME = "Polarize"
+FIT_GUIDE_MARKER = "KEPEKCI_FIT_GUIDE_V1"
+FIT_GUIDE_ATTRIBUTE_NAME = "Ölçü Rehberi"
+
+FIT_GUIDE_HTML = """
+<!-- KEPEKCI_FIT_GUIDE_V1 -->
+<div style="max-height:72vh;overflow-y:auto;overflow-x:hidden;padding-right:8px;box-sizing:border-box;">
+  <section style="margin-top:8px;padding:16px;border:1px solid #e5e7eb;border-radius:14px;background:#f8fafc;max-width:920px;margin-left:auto;margin-right:auto;">
+    <h2 style="margin:0 0 10px 0;font-size:20px;line-height:1.3;">📐 Beden ve Uyum Kılavuzu</h2>
+    <p style="margin:0 0 10px 0;line-height:1.6;">
+      Doğru gözlüğü seçmek bazen zor olabilir. En iyi uyumu yakalamak için <strong>boyut</strong>,
+      <strong>uyum tipi</strong> ve <strong>köprü/burun yapısı</strong> birlikte değerlendirilmelidir.
+    </p>
+    <h3 style="margin:14px 0 8px 0;font-size:17px;">Kendim için doğru boyutu nasıl bulabilirim?</h3>
+    <img src="https://cdn.myikas.com/images/56f7be34-3b4d-4237-866a-095dfdd960e7/6dec4f66-48ca-49be-bc7a-d3ac6e8cf5b6/image_1080.webp" alt="Gözlük ölçüm rehberi" style="width:100%;max-width:920px;border-radius:10px;margin:6px 0 10px 0;">
+    <p style="margin:0 0 10px 0;line-height:1.6;">
+      Size iyi oturan mevcut bir gözlüğünüzün menteşe-menteşe mesafesini cetvelle ölçün.
+      Yaklaşık <strong>±4 mm</strong> tolerans aralığı, yeni çerçeve seçiminde güvenli bir referans sağlar.
+    </p>
+    <img src="https://cdn.myikas.com/images/56f7be34-3b4d-4237-866a-095dfdd960e7/63acfa3b-b745-448b-b5d1-7218581b072f/image_1080.webp" alt="Ölçü referans görseli" style="width:100%;max-width:920px;border-radius:10px;margin:6px 0 10px 0;">
+    <h3 style="margin:14px 0 8px 0;font-size:17px;">Diğer ölçümler</h3>
+    <p style="margin:0 0 8px 0;line-height:1.6;">
+      Gözlük sapının iç yüzeyinde genellikle model kodu, lens genişliği, köprü genişliği ve sap uzunluğu yer alır.
+      Bu değerler <strong>mm</strong> cinsindendir ve doğru seçimi kolaylaştırır.
+    </p>
+    <h3 style="margin:14px 0 8px 0;font-size:17px;">Uygunluk (Fit) tipleri</h3>
+    <ul style="margin:0 0 10px 18px;line-height:1.7;padding:0;">
+      <li><strong>Narrow Fit:</strong> Yüzün daha dar bölümünü kaplayan yapı.</li>
+      <li><strong>Regular Fit:</strong> Çoğu kullanıcı için dengeli ve standart uyum.</li>
+      <li><strong>Wide Fit:</strong> Daha geniş kaplama ve daha büyük ön çerçeve hissi.</li>
+    </ul>
+    <h3 style="margin:14px 0 8px 0;font-size:17px;">Köprü ve burun yastıkları</h3>
+    <ul style="margin:0 0 0 18px;line-height:1.7;padding:0;">
+      <li><strong>Yüksek köprü uyumu:</strong> Burun köprüsü yüksek kullanıcılar için daha stabil duruş.</li>
+      <li><strong>Alçak köprü uyumu:</strong> Kayma yaşayan veya elmacık kemiği yüksek kullanıcılar için daha konforlu temas.</li>
+      <li><strong>Evrensel uyum:</strong> Çoğu yüz şekline dengeli uyum sağlayan genel tasarım.</li>
+      <li><strong>Ayarlanabilir burun yastığı:</strong> Burun formuna göre kişiselleştirilebilir destek.</li>
+    </ul>
+  </section>
+</div>
+""".strip()
+
+CHILD_KEYWORDS = ("çocuk", "cocuk", "kids", "kid", "junior", "bebek")
+POLARIZED_KEYWORDS = ("polarize", "polarized", "polarlı", "polar")
 
 
 class AutomationError(Exception):
@@ -50,10 +99,29 @@ class ProductCandidate:
     variants: List[VariantCandidate]
 
 
+@dataclass
+class ProductSignals:
+    is_child: bool
+    is_polarized: bool
+
+
 def _normalize_text(value: str) -> str:
     value = str(value or "").strip().lower()
     value = re.sub(r"\s+", " ", value)
     return value
+
+
+def _fold_text(value: str) -> str:
+    value = _normalize_text(value)
+    return (
+        value.replace("ı", "i")
+        .replace("İ", "i")
+        .replace("ş", "s")
+        .replace("ğ", "g")
+        .replace("ç", "c")
+        .replace("ö", "o")
+        .replace("ü", "u")
+    )
 
 
 def _normalize_slug(value: str) -> str:
@@ -272,16 +340,28 @@ class IkasAutomationRunner:
         price_rules_path: str,
         channel_preferences: Dict[str, bool],
         logger: Optional[Callable[[str], None]] = None,
+        progress_callback: Optional[Callable[[Dict], None]] = None,
     ):
         self.config = config or {}
         self.price_rules_path = price_rules_path
         self.channel_preferences = channel_preferences or {}
         self.logger = logger or (lambda msg: None)
+        self.progress_callback = progress_callback or (lambda _payload: None)
 
         self.session = requests.Session()
         self.auth_header = ""
         self.using_mcp_token = False
         self.oauth_fallback_used = False
+        self.google_taxonomy_id = str(
+            self.config.get("ikas_google_taxonomy_id", DEFAULT_GOOGLE_TAXONOMY_ID)
+        ).strip() or DEFAULT_GOOGLE_TAXONOMY_ID
+        self.ai_description_enabled = bool(
+            self.config.get("ikas_ai_description_enabled", True)
+        )
+        self.ai_description_model = str(
+            self.config.get("ikas_description_model", "gpt-4o-mini")
+        ).strip() or "gpt-4o-mini"
+        self.fitguide_attribute_id = ""
         self.report = AutomationReport()
 
         self.summary = {
@@ -306,6 +386,12 @@ class IkasAutomationRunner:
 
         self.summary["total_products"] = len(candidates)
         self._log(f"{len(candidates)} urun bulundu.")
+        self._progress(
+            stage="start",
+            current=0,
+            total=len(candidates),
+            message=f"{len(candidates)} urun bulundu. Islem baslatiliyor...",
+        )
 
         self._log("Token hazirlaniyor...")
         self.auth_header = self._resolve_auth_header()
@@ -313,10 +399,34 @@ class IkasAutomationRunner:
         channels = self._list_sales_channels()
         sales_channel_payload = self._build_sales_channel_payload(channels)
 
-        for product in candidates:
-            self._process_product(product, price_rules, sales_channel_payload)
+        total = len(candidates)
+        for idx, product in enumerate(candidates, start=1):
+            self._log(f"⏳ [{idx}/{total}] Isleniyor: {product.name}")
+            self._progress(
+                stage="product_start",
+                current=idx - 1,
+                total=total,
+                product_name=product.name,
+                message=f"{product.name} isleniyor...",
+            )
+            status = self._process_product(product, price_rules, sales_channel_payload)
+            self._progress(
+                stage="product_done",
+                current=idx,
+                total=total,
+                product_name=product.name,
+                status=status,
+                message=f"{product.name} tamamlandi ({status}).",
+            )
+            self._log(f"➡️ Sonraki urune geciliyor ({idx}/{total}).")
 
         report_path = self.report.save(self.config.get("report_dir", "reports"))
+        self._progress(
+            stage="completed",
+            current=total,
+            total=total,
+            message="Tam otomasyon tamamlandi.",
+        )
         return {
             "report_path": report_path,
             "summary": self.summary,
@@ -324,6 +434,30 @@ class IkasAutomationRunner:
 
     def _log(self, message: str):
         self.logger(message)
+
+    def _progress(
+        self,
+        stage: str,
+        current: int,
+        total: int,
+        message: str = "",
+        product_name: str = "",
+        status: str = "",
+    ):
+        try:
+            self.progress_callback(
+                {
+                    "stage": stage,
+                    "current": int(current),
+                    "total": int(total),
+                    "message": str(message or ""),
+                    "product_name": str(product_name or ""),
+                    "status": str(status or ""),
+                }
+            )
+        except Exception:
+            # UI callback hatasi otomasyonu durdurmasin.
+            pass
 
     def _timeout(self) -> Tuple[int, int]:
         connect_timeout = int(self.config.get("request_timeout_connect", 10))
@@ -575,6 +709,501 @@ class IkasAutomationRunner:
         images.sort(key=lambda p: p.name.lower())
         return images
 
+    def _detect_product_signals(self, product: ProductCandidate) -> ProductSignals:
+        parts = [product.name]
+        parts.extend(v.folder_path.name for v in (product.variants or []))
+        source = _fold_text(" ".join(parts))
+
+        is_child = any(keyword in source for keyword in CHILD_KEYWORDS)
+        is_polarized = any(keyword in source for keyword in POLARIZED_KEYWORDS)
+        return ProductSignals(is_child=is_child, is_polarized=is_polarized)
+
+    def _merge_names(self, existing: List[str], desired: List[str]) -> List[str]:
+        merged: List[str] = []
+        seen = set()
+        for item in (existing or []) + (desired or []):
+            text = str(item or "").strip()
+            if not text:
+                continue
+            key = _fold_text(text)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(text)
+        return merged
+
+    def _build_category_names(self, signals: ProductSignals) -> List[str]:
+        categories = [BASE_CATEGORY_NAME]
+        if signals.is_child:
+            categories.append(CHILD_CATEGORY_NAME)
+        if signals.is_polarized:
+            categories.append(POLARIZED_CATEGORY_NAME)
+        return categories
+
+    def _build_tag_names(self, product: ProductCandidate, signals: ProductSignals) -> List[str]:
+        tags = [
+            BASE_CATEGORY_NAME,
+            str(product.brand or "").strip(),
+        ]
+        if signals.is_child:
+            tags.append(CHILD_CATEGORY_NAME)
+        if signals.is_polarized:
+            tags.append(POLARIZED_CATEGORY_NAME)
+        return self._merge_names([], tags)
+
+    def _list_variant_labels(self, product: ProductCandidate) -> List[str]:
+        labels = []
+        seen = set()
+        for v in product.variants or []:
+            val = _normalize_variant(getattr(v, "variant_value", ""))
+            if not val or val == "STANDART":
+                continue
+            if val in seen:
+                continue
+            seen.add(val)
+            labels.append(val)
+        labels.sort()
+        return labels
+
+    def _strip_html_tags(self, value: str) -> str:
+        text = re.sub(r"<[^>]+>", " ", str(value or ""))
+        text = html.unescape(text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _description_has_fit_guide(self, description: str) -> bool:
+        text = str(description or "")
+        if not text.strip():
+            return False
+        if FIT_GUIDE_MARKER in text:
+            return True
+        plain = _fold_text(self._strip_html_tags(text))
+        return "olcu rehberi" in plain or "beden ve uyum kilavuzu" in plain
+
+    def _resolve_fitguide_attribute_id(self) -> str:
+        if self.fitguide_attribute_id:
+            return self.fitguide_attribute_id
+        query = """
+        query ListProductAttributes {
+          listProductAttribute {
+            id
+            name
+            type
+          }
+        }
+        """
+        data, errors = self._graphql(query, allow_errors=True)
+        if errors:
+            raise AutomationError(
+                errors[0].get("message", "Ozel alan listesi okunamadi.")
+            )
+        attrs = (data or {}).get("listProductAttribute") or []
+        target_name = _fold_text(FIT_GUIDE_ATTRIBUTE_NAME)
+        selected_id = ""
+        for item in attrs:
+            name = _fold_text((item or {}).get("name"))
+            attr_type = str((item or {}).get("type") or "").strip().upper()
+            if name == target_name and attr_type == "HTML":
+                selected_id = str((item or {}).get("id") or "").strip()
+                break
+        if not selected_id:
+            for item in attrs:
+                name = _fold_text((item or {}).get("name"))
+                if name == target_name:
+                    selected_id = str((item or {}).get("id") or "").strip()
+                    break
+        if not selected_id:
+            raise AutomationError(
+                f"'{FIT_GUIDE_ATTRIBUTE_NAME}' ozel alani bulunamadi. "
+                "Ikas panelinde HTML tipinde olusturulmalidir."
+            )
+        self.fitguide_attribute_id = selected_id
+        self._log(f"Olcu Rehberi ozel alan ID: {selected_id}")
+        return selected_id
+
+    def _extract_fitguide_attribute_value(
+        self, attributes: List[Dict], attribute_id: str
+    ) -> str:
+        target_id = str(attribute_id or "").strip()
+        if not target_id:
+            return ""
+        for item in attributes or []:
+            pid = str((item or {}).get("productAttributeId") or "").strip()
+            if pid != target_id:
+                continue
+            return str((item or {}).get("value") or "")
+        return ""
+
+    def _apply_fitguide_special_field(
+        self,
+        product_id: str,
+        product_name: str,
+        existing_attributes: Optional[List[Dict]] = None,
+        existing_variants: Optional[List[Dict]] = None,
+    ):
+        attribute_id = self._resolve_fitguide_attribute_id()
+        current_value = self._extract_fitguide_attribute_value(
+            existing_attributes or [], attribute_id
+        )
+        product_needs_update = not self._description_has_fit_guide(current_value)
+
+        variant_inputs = []
+        for variant in existing_variants or []:
+            variant_id = str((variant or {}).get("id") or "").strip()
+            if not variant_id:
+                continue
+            variant_value = self._extract_fitguide_attribute_value(
+                (variant or {}).get("attributes") or [],
+                attribute_id,
+            )
+            if self._description_has_fit_guide(variant_value):
+                continue
+            variant_inputs.append(
+                {
+                    "variantId": variant_id,
+                    "attributes": [
+                        {
+                            "productAttributeId": attribute_id,
+                            "value": FIT_GUIDE_HTML,
+                        }
+                    ],
+                }
+            )
+
+        if (not product_needs_update) and (len(variant_inputs) == 0):
+            self._log(f"SKIP SPECIAL FIELD: {product_name} -> Olcu Rehberi zaten var.")
+            return
+
+        mutation = """
+        mutation UpdateProductAndVariantAttributes($input: UpdateProductAndVariantAttributesInput!) {
+          updateProductAndVariantAttributes(input: $input) {
+            id
+            name
+            attributes {
+              productAttributeId
+              value
+            }
+          }
+        }
+        """
+        variables = {
+            "input": {
+                "productId": product_id,
+                "productAttributes": (
+                    [
+                        {
+                            "productAttributeId": attribute_id,
+                            "value": FIT_GUIDE_HTML,
+                        }
+                    ]
+                    if product_needs_update
+                    else []
+                ),
+                "variantAttributes": variant_inputs,
+            }
+        }
+        data, errors = self._graphql(mutation, variables, allow_errors=True)
+        if errors:
+            raise AutomationError(
+                errors[0].get("message", "Olcu Rehberi ozel alani guncellenemedi.")
+            )
+        updated = (data or {}).get("updateProductAndVariantAttributes")
+        if not updated:
+            raise AutomationError("Olcu Rehberi ozel alani yaniti bos dondu.")
+        self._log(
+            f"SPECIAL FIELD UPDATED: {product_name} -> Ölçü Rehberi "
+            f"(urun:{'evet' if product_needs_update else 'hayir'}, varyant:{len(variant_inputs)})"
+        )
+
+    def _build_fallback_description(
+        self, product: ProductCandidate, signals: ProductSignals
+    ) -> str:
+        brand = str(product.brand or "Bu").strip()
+        model = str(product.model or "").strip()
+        variants = self._list_variant_labels(product)
+
+        descriptor_parts = []
+        if signals.is_polarized:
+            descriptor_parts.append("polarize cam desteği")
+        if signals.is_child:
+            descriptor_parts.append("çocuk kullanımına uygun yapı")
+
+        feature_text = "standart güneş koruma özellikleri"
+        if descriptor_parts:
+            feature_text = " ve ".join(descriptor_parts)
+
+        model_text = f" {model}" if model else ""
+        variant_line = "Farklı renk varyantları mevcuttur."
+        if variants:
+            variant_line = "Varyant seçenekleri: " + ", ".join(variants) + "."
+
+        return (
+            f"<p>🕶️ <strong>{brand}{model_text} Güneş Gözlüğü</strong>, modern çizgileri ve günlük kullanıma uygun yapısıyla "
+            "stil ile işlevselliği bir araya getirir. Şehir hayatında, sürüşte veya tatilde konforlu bir kullanım sunar.</p>"
+            f"<p>☀️ <strong>Koruma ve Performans</strong><br>{feature_text.capitalize()} sayesinde güneşli ortamlarda daha rahat bir görüş "
+            "deneyimi hedeflenir. Lens ve çerçeve dengesi uzun süreli kullanımda göz ve yüz konforunu destekler.</p>"
+            f"<p>✨ <strong>Tasarım ve Konfor</strong><br>Hafif ve dengeli yapı, burun ve kulak bölgesinde baskıyı azaltmaya yardımcı olur. "
+            "Ergonomik form, gün boyu kullanımda daha stabil bir duruş sağlar.</p>"
+            f"<p>🎨 <strong>Varyant Bilgisi</strong><br>{variant_line}</p>"
+            "<p>📏 <strong>Ölçü ve Uyum</strong><br>Doğru ölçü seçimi; hem estetik görünüm hem de optimum kullanım deneyimi için önemlidir. "
+            "Yüz tipinize uygun seçimi yaparak üründen maksimum verim alabilirsiniz.</p>"
+        )
+
+    def _build_meta_description(
+        self, product: ProductCandidate, signals: ProductSignals
+    ) -> str:
+        base = f"{product.brand} {product.model} güneş gözlüğü".strip()
+        bits = [base]
+        if signals.is_polarized:
+            bits.append("polarize")
+        if signals.is_child:
+            bits.append("çocuk")
+        bits.append("Kepekçi Optik")
+        text = " - ".join(bits)
+        return text[:157] + "..." if len(text) > 160 else text
+
+    def _generate_description_with_openai(
+        self, product: ProductCandidate, signals: ProductSignals
+    ) -> Optional[str]:
+        openai_key = str(self.config.get("openai_api_key", "") or "").strip()
+        if not openai_key:
+            return None
+
+        traits = []
+        if signals.is_polarized:
+            traits.append("polarize")
+        if signals.is_child:
+            traits.append("çocuk")
+        trait_text = ", ".join(traits) if traits else "standart"
+        variant_text = ", ".join(self._list_variant_labels(product)) or "standart varyant"
+
+        prompt = (
+            f"Ürün adı: {product.name}\n"
+            f"Marka: {product.brand}\n"
+            f"Model: {product.model}\n"
+            f"Özellik ipucu: {trait_text}\n"
+            f"Varyantlar: {variant_text}\n\n"
+            "Türkçe, e-ticaret için daha gelişmiş bir ürün açıklaması yaz. "
+            "Uzunluk 190-280 kelime olsun. "
+            "Emoji destekli bölüm yapısı kullan: 🕶️, ☀️, ✨, 🎨. "
+            "Bölümler: Giriş, Koruma/Performans, Tasarım/Konfor, Varyantlar. "
+            "Yanıt sadece HTML olsun; <p>, <strong>, <br> kullanabilirsin. "
+            "Aşırı reklam dili kullanma, teknik ve anlaşılır kal."
+        )
+
+        response = self.session.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {openai_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.ai_description_model,
+                "temperature": 0.5,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You generate detailed Turkish ecommerce product descriptions with structured HTML blocks.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            timeout=self._timeout(),
+        )
+        if response.status_code != 200:
+            raise AutomationError(f"OpenAI aciklama istegi basarisiz: {response.status_code}")
+
+        body = response.json()
+        choices = body.get("choices") or []
+        if not choices:
+            raise AutomationError("OpenAI aciklama yaniti bos dondu.")
+        content = (((choices[0] or {}).get("message") or {}).get("content") or "").strip()
+        if not content:
+            raise AutomationError("OpenAI aciklama metni bos.")
+        return content
+
+    def _generate_description_with_gemini(
+        self, product: ProductCandidate, signals: ProductSignals
+    ) -> Optional[str]:
+        gemini_key = str(self.config.get("gemini_api_key", "") or "").strip()
+        if not gemini_key:
+            return None
+
+        traits = []
+        if signals.is_polarized:
+            traits.append("polarize")
+        if signals.is_child:
+            traits.append("çocuk")
+        trait_text = ", ".join(traits) if traits else "standart"
+        variant_text = ", ".join(self._list_variant_labels(product)) or "standart varyant"
+
+        prompt = (
+            f"Ürün adı: {product.name}\n"
+            f"Marka: {product.brand}\n"
+            f"Model: {product.model}\n"
+            f"Özellik ipucu: {trait_text}\n"
+            f"Varyantlar: {variant_text}\n\n"
+            "Türkçe, 190-280 kelime arası gelişmiş bir e-ticaret açıklaması yaz. "
+            "Emoji destekli bölüm yapısı kullan: 🕶️, ☀️, ✨, 🎨. "
+            "Yanıt sadece HTML olsun; <p>, <strong>, <br> kullan."
+        )
+
+        response = self.session.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+            params={"key": gemini_key},
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.5},
+            },
+            timeout=self._timeout(),
+        )
+        if response.status_code != 200:
+            raise AutomationError(f"Gemini aciklama istegi basarisiz: {response.status_code}")
+
+        body = response.json()
+        candidates = body.get("candidates") or []
+        if not candidates:
+            raise AutomationError("Gemini aciklama yaniti bos dondu.")
+        parts = (((candidates[0] or {}).get("content") or {}).get("parts") or [])
+        text = " ".join(str(p.get("text", "")).strip() for p in parts if p.get("text")).strip()
+        if not text:
+            raise AutomationError("Gemini aciklama metni bos.")
+        return text
+
+    def _generate_description(self, product: ProductCandidate, signals: ProductSignals) -> str:
+        if not self.ai_description_enabled:
+            return self._build_fallback_description(product, signals)
+
+        try:
+            ai_text = self._generate_description_with_openai(product, signals)
+            if ai_text:
+                self._log(f"AI aciklama kullanildi (OpenAI): {product.name}")
+                return ai_text
+        except Exception as exc:
+            self._log(f"WARN: OpenAI aciklama hatasi ({product.name}): {exc}")
+
+        try:
+            ai_text = self._generate_description_with_gemini(product, signals)
+            if ai_text:
+                self._log(f"AI aciklama kullanildi (Gemini): {product.name}")
+                return ai_text
+        except Exception as exc:
+            self._log(f"WARN: Gemini aciklama hatasi ({product.name}): {exc}")
+
+        return self._build_fallback_description(product, signals)
+
+    def _apply_product_metadata(
+        self,
+        remote_product: Dict,
+        product: ProductCandidate,
+        sales_channels: List[Dict],
+    ) -> Dict:
+        # createProduct yanitinda metadata alanlari gelmedigi icin tam urun kaydini tekrar cek
+        latest = self._find_product_by_name(product.name) or remote_product
+        product_id = str((latest or {}).get("id") or "")
+        if not product_id:
+            raise AutomationError(f"Urun id bulunamadi: {product.name}")
+
+        signals = self._detect_product_signals(product)
+        desired_categories = self._build_category_names(signals)
+        desired_tags = self._build_tag_names(product, signals)
+
+        existing_categories = [
+            str((item or {}).get("name") or "").strip()
+            for item in ((latest or {}).get("categories") or [])
+        ]
+        existing_tags = [
+            str((item or {}).get("name") or "").strip()
+            for item in ((latest or {}).get("tags") or [])
+        ]
+        model_key = _fold_text(product.model or "")
+        if model_key:
+            existing_tags = [
+                tag
+                for tag in existing_tags
+                if _fold_text(tag) != model_key
+            ]
+        merged_categories = self._merge_names(existing_categories, desired_categories)
+        merged_tags = self._merge_names(existing_tags, desired_tags)
+
+        existing_brand = str((((latest or {}).get("brand") or {}).get("name") or "")).strip()
+        brand_name = existing_brand or str(product.brand or "").strip()
+
+        existing_description = str((latest or {}).get("description") or "").strip()
+        clean_description = self._strip_html_tags(existing_description)
+        description = (
+            existing_description
+            if len(clean_description) >= 60
+            else self._generate_description(product, signals)
+        )
+
+        taxonomy_id = (
+            str((latest or {}).get("googleTaxonomyId") or "").strip()
+            or self.google_taxonomy_id
+        )
+        meta_description = self._build_meta_description(product, signals)
+
+        update_input: Dict = {
+            "id": product_id,
+            "salesChannels": sales_channels,
+            "description": description,
+            "googleTaxonomyId": taxonomy_id,
+            "metaData": {
+                "pageTitle": product.name,
+                "description": meta_description,
+            },
+        }
+        if brand_name:
+            update_input["brand"] = {"name": brand_name}
+        if merged_categories:
+            update_input["categories"] = [{"name": name} for name in merged_categories]
+        if merged_tags:
+            update_input["tags"] = [{"name": name} for name in merged_tags]
+
+        mutation = """
+        mutation UpdateProductMetadata($input: UpdateProductInput!) {
+          updateProduct(input: $input) {
+            id
+            name
+            description
+            googleTaxonomyId
+            brand { id name }
+            categories { id name }
+            tags { id name }
+          }
+        }
+        """
+        data, errors = self._graphql(mutation, {"input": update_input}, allow_errors=True)
+        if errors:
+            raise AutomationError(errors[0].get("message", "Urun metadata guncellenemedi."))
+
+        updated = (data or {}).get("updateProduct")
+        if not updated:
+            raise AutomationError("Urun metadata guncelleme yaniti bos dondu.")
+
+        existing_attributes = (latest or {}).get("attributes") or []
+        self._apply_fitguide_special_field(
+            product_id=product_id,
+            product_name=product.name,
+            existing_attributes=existing_attributes,
+            existing_variants=(latest or {}).get("variants") or [],
+        )
+
+        self._log(
+            f"METADATA UPDATED: {product.name} | "
+            f"brand={brand_name or '-'} | "
+            f"categories={', '.join(merged_categories)} | "
+            f"tags={', '.join(merged_tags)} | "
+            f"googleTaxonomyId={taxonomy_id}"
+        )
+        self.report.add(
+            "UPDATED",
+            product.name,
+            "",
+            "Marka/kategori/etiket/google kategori/aciklama guncellendi; Özel Alan > Ölçü Rehberi yazildi.",
+        )
+        return updated
+
     def _find_product_by_name(self, product_name: str) -> Optional[Dict]:
         query = """
         query FindProduct($search: String!) {
@@ -582,9 +1211,31 @@ class IkasAutomationRunner:
             data {
               id
               name
+              description
+              googleTaxonomyId
+              brand {
+                id
+                name
+              }
+              categories {
+                id
+                name
+              }
+              tags {
+                id
+                name
+              }
+              attributes {
+                productAttributeId
+                value
+              }
               variants {
                 id
                 sku
+                attributes {
+                  productAttributeId
+                  value
+                }
                 images {
                   imageId
                   isMain
@@ -662,7 +1313,7 @@ class IkasAutomationRunner:
         product: ProductCandidate,
         price_rules: PriceRuleResolver,
         sales_channels: List[Dict],
-    ):
+    ) -> str:
         try:
             price_rule = price_rules.resolve(product.brand, product.model)
             if not price_rule:
@@ -674,19 +1325,27 @@ class IkasAutomationRunner:
                     f"Fiyat kurali bulunamadi (marka={product.brand}, model={product.model}).",
                 )
                 self._log(f"SKIP: {product.name} -> fiyat kurali yok.")
-                return
+                return "SKIPPED_NO_PRICE"
 
             existing = self._find_product_by_name(product.name)
             if existing:
                 remote_product = self._update_existing_product(
                     existing, product, price_rule, sales_channels
                 )
+                remote_product = self._apply_product_metadata(
+                    remote_product, product, sales_channels
+                )
                 self.summary["updated_products"] += 1
                 self.report.add("UPDATED", product.name, "", "Urun upsert edildi.")
+                result = "UPDATED"
             else:
                 remote_product = self._create_new_product(product, price_rule, sales_channels)
+                remote_product = self._apply_product_metadata(
+                    remote_product, product, sales_channels
+                )
                 self.summary["created_products"] += 1
                 self.report.add("CREATED", product.name, "", "Yeni urun olusturuldu.")
+                result = "CREATED"
 
             remote_variant_map = self._build_remote_variant_map(remote_product)
             self._update_variant_prices(remote_product["id"], product, price_rule, remote_variant_map)
@@ -694,11 +1353,14 @@ class IkasAutomationRunner:
             refreshed = self._find_product_by_name(product.name) or remote_product
             refreshed_variant_map = self._build_remote_variant_map(refreshed)
             self._upload_variant_images(product, refreshed_variant_map)
+            self._log(f"✅ Islem tamamlandi: {product.name}")
+            return result
 
         except Exception as exc:
             self.summary["failed_products"] += 1
             self.report.add("FAILED", product.name, "", str(exc))
             self._log(f"FAILED: {product.name} -> {exc}")
+            return "FAILED"
 
     def _create_new_product(
         self,
