@@ -21,6 +21,18 @@ V2_GRAPHQL_URL = "https://api.myikas.com/api/v2/admin/graphql"
 IMAGE_UPLOAD_URL = "https://api.myikas.com/api/v1/admin/product/upload/image"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 DEFAULT_GOOGLE_TAXONOMY_ID = "178"
+DEFAULT_DESCRIPTION_IMAGE_WIDTH_PX = 820
+DESCRIPTION_IMAGE_STYLE_TEMPLATE = (
+    "width:{width}px !important;"
+    "max-width:100% !important;"
+    "height:auto !important;"
+    "display:block;"
+    "float:none !important;"
+    "clear:none !important;"
+    "margin:0 0 16px 0;"
+    "border-radius:10px;"
+    "box-shadow:0 4px 14px rgba(0,0,0,0.08)"
+)
 
 BASE_CATEGORY_NAME = "Güneş Gözlüğü"
 CHILD_CATEGORY_NAME = "Çocuk"
@@ -68,6 +80,29 @@ FIT_GUIDE_HTML = """
 
 CHILD_KEYWORDS = ("çocuk", "cocuk", "kids", "kid", "junior", "bebek")
 POLARIZED_KEYWORDS = ("polarize", "polarized", "polarlı", "polar")
+
+PERMANENT_DESCRIPTION_IMAGE_URLS = (
+    "https://cdn.myikas.com/images/56f7be34-3b4d-4237-866a-095dfdd960e7/50717bb5-d5e7-43f9-9b46-e0b0f18836ce/image_1080.webp",
+    "https://cdn.myikas.com/images/56f7be34-3b4d-4237-866a-095dfdd960e7/dc9dda01-4f36-4f68-884e-ad15df876f7c/image_1080.webp",
+)
+
+BRAND_DESCRIPTION_PROFILES = {
+    "rayban": {
+        "identity": "zamansız ve ikonik çizgisiyle premium şehir stilini temsil eder",
+        "design": "kemik ve metal dengesiyle yüz hatlarını netleştiren güçlü bir tasarım dili sunar",
+        "usage": "günlük kullanım, sürüş ve açık hava aktivitelerinde uzun süreli konfor hedefler",
+    },
+    "osse": {
+        "identity": "modern şehir modasına yakın, dinamik çizgilere sahip bir stil yaklaşımı sunar",
+        "design": "hafif gövde yapısı ve yüze dengeli oturan formu ile konforu ön planda tutar",
+        "usage": "günlük kombinlerde ve aktif kullanımda stil ile pratikliği birlikte taşır",
+    },
+    "venture": {
+        "identity": "modern ve sportif çizgisiyle işlevsel kullanım dengesini öne çıkarır",
+        "design": "dayanıklı çerçeve yapısı ve dengeli ağırlık dağılımı ile gün boyu rahatlık sağlar",
+        "usage": "şehir yaşamı, seyahat ve açık hava kullanımında çok yönlü performans sunar",
+    },
+}
 
 
 class AutomationError(Exception):
@@ -333,6 +368,115 @@ def _extract_variant(text: str, allow_plain_number: bool) -> str:
     return f"C{normalized_num}"
 
 
+def description_has_permanent_images(description: str) -> bool:
+    text = str(description or "")
+    if not text:
+        return False
+    return all(url in text for url in PERMANENT_DESCRIPTION_IMAGE_URLS)
+
+
+def _description_image_style(width_px: int = DEFAULT_DESCRIPTION_IMAGE_WIDTH_PX) -> str:
+    return DESCRIPTION_IMAGE_STYLE_TEMPLATE.format(width=width_px)
+
+
+def build_permanent_description_image_html(
+    width_px: int = DEFAULT_DESCRIPTION_IMAGE_WIDTH_PX,
+) -> str:
+    style = _description_image_style(width_px)
+    blocks = [
+        f'<p><img src="{url}" style="{style}"></p>'
+        for url in PERMANENT_DESCRIPTION_IMAGE_URLS
+    ]
+    return "".join(blocks)
+
+
+def ensure_permanent_description_images(
+    description: str,
+    width_px: int = DEFAULT_DESCRIPTION_IMAGE_WIDTH_PX,
+) -> str:
+    text = str(description or "").strip()
+    image_block = build_permanent_description_image_html(width_px)
+    if not text:
+        return image_block
+    if description_has_permanent_images(text):
+        return text
+
+    for url in PERMANENT_DESCRIPTION_IMAGE_URLS:
+        text = re.sub(
+            rf"""<p>\s*<img\b[^>]*\bsrc\s*=\s*(['"]){re.escape(url)}\1[^>]*>\s*</p>""",
+            "",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ).strip()
+
+    return image_block + text
+
+
+def _brand_profile_key(value: str) -> str:
+    folded = _fold_text(value or "")
+    return re.sub(r"[^a-z0-9]+", "", folded)
+
+
+def build_brand_specific_description(
+    product_name: str,
+    brand: str = "",
+    model: str = "",
+    variant_labels: Optional[List[str]] = None,
+    is_child: bool = False,
+    is_polarized: bool = False,
+    template_brand: str = "",
+) -> str:
+    parsed_brand, parsed_model = _extract_brand_model(product_name)
+    brand_text = str(brand or "").strip() or parsed_brand or "Bu"
+    model_text = str(model or "").strip() or parsed_model
+    variant_labels = [str(v).strip() for v in (variant_labels or []) if str(v).strip()]
+
+    profile_brand_key = _brand_profile_key(template_brand or brand_text)
+    profile = BRAND_DESCRIPTION_PROFILES.get(
+        profile_brand_key,
+        {
+            "identity": "güncel tasarım dili ve dengeli kullanım deneyimi sunar",
+            "design": "hafif yapı ve ergonomik formu ile gün boyu konfor odaklı bir kullanım hedefler",
+            "usage": "günlük yaşamdan açık hava kullanımına kadar farklı senaryolarda güvenli eşlik sunar",
+        },
+    )
+
+    trait_parts = []
+    if is_polarized:
+        trait_parts.append("polarize lens desteği")
+    if is_child:
+        trait_parts.append("çocuk kullanımına uygun ölçü yaklaşımı")
+    trait_text = ", ".join(trait_parts) if trait_parts else "standart güneş koruma yaklaşımı"
+
+    model_line = f" {model_text}" if model_text else ""
+    variant_line = (
+        f"Renk seçenekleri: {', '.join(sorted(set(variant_labels), key=str.upper))}."
+        if variant_labels
+        else "Model tek varyant veya standart renk yapısıyla listelenmektedir."
+    )
+
+    html_body = (
+        f"<p><strong>{brand_text}{model_line} Güneş Gözlüğü</strong>, {profile['identity']}. "
+        "Günlük stil ile fonksiyonel korumayı tek bir ürün yapısında birleştirir.</p>"
+        f"<h2>Tasarım ve Konfor</h2><p>{profile['design']}. "
+        "Çerçeve geometrisi yüz hattına dengeli oturur ve uzun kullanımda baskıyı azaltmayı hedefler.</p>"
+        f"<h2>Koruma ve Lens Performansı</h2><p>Üründe {trait_text} yaklaşımı bulunur. "
+        "Güneşli ortamlarda daha kontrollü görüş sunarken dış mekân kullanım konforunu artırır.</p>"
+        f"<h2>Varyant ve Stil Seçenekleri</h2><p>{variant_line} "
+        "Farklı kombinlere uyum sağlayan renk alternatifleri ile kullanım esnekliği sunulur.</p>"
+        f"<h2>Kullanım Önerisi</h2><p>{profile['usage']}. "
+        "Yüz ölçünüze uygun seçim yapmanız hem estetik görünüm hem kullanım verimi açısından önemlidir.</p>"
+        f"<ul><li><strong>Marka:</strong> {brand_text}</li>"
+        f"<li><strong>Model:</strong> {model_text or '-'}</li>"
+        "<li><strong>Kategori:</strong> Güneş Gözlüğü</li></ul>"
+    )
+    return ensure_permanent_description_images(html_body)
+
+
+def extract_brand_model_from_name(product_name: str) -> Tuple[str, str]:
+    return _extract_brand_model(product_name)
+
+
 class IkasAutomationRunner:
     def __init__(
         self,
@@ -355,6 +499,10 @@ class IkasAutomationRunner:
         self.google_taxonomy_id = str(
             self.config.get("ikas_google_taxonomy_id", DEFAULT_GOOGLE_TAXONOMY_ID)
         ).strip() or DEFAULT_GOOGLE_TAXONOMY_ID
+        self.description_image_width_px = DEFAULT_DESCRIPTION_IMAGE_WIDTH_PX
+        self.description_image_style = DESCRIPTION_IMAGE_STYLE_TEMPLATE.format(
+            width=self.description_image_width_px
+        )
         self.ai_description_enabled = bool(
             self.config.get("ikas_ai_description_enabled", True)
         )
@@ -770,6 +918,137 @@ class IkasAutomationRunner:
         text = html.unescape(text)
         return re.sub(r"\s+", " ", text).strip()
 
+    def _normalize_description_images(self, description: str) -> str:
+        text = str(description or "").strip()
+        if not text:
+            return text
+        if "<img" not in text.lower():
+            return text
+
+        # Her normalize turunda style tekrar birikmesini engellemek icin
+        # img style'i sabit ve tek bir template'e zorlanir.
+        removable_keys = {
+            "width",
+            "max-width",
+            "height",
+            "display",
+            "margin",
+            "float",
+            "clear",
+            "border-radius",
+            "box-shadow",
+        }
+
+        def _replacer(match: re.Match) -> str:
+            tag = match.group(0)
+            style_match = re.search(r"""style\s*=\s*(['"])(.*?)\1""", tag, re.IGNORECASE | re.DOTALL)
+            kept_styles: List[str] = []
+            if style_match:
+                raw_style = style_match.group(2)
+                for part in raw_style.split(";"):
+                    piece = part.strip()
+                    if not piece or ":" not in piece:
+                        continue
+                    key, value = piece.split(":", 1)
+                    key_fold = _normalize_text(key).replace(" ", "")
+                    if key_fold in removable_keys:
+                        continue
+                    # Yalnizca zararsiz ek stilleri koru; temel layout stilleri
+                    # her zaman template'ten gelsin.
+                    kept_styles.append(f"{key.strip()}: {value.strip()}")
+
+            merged_style = self.description_image_style
+            if kept_styles:
+                merged_style = f"{'; '.join(kept_styles)}; {merged_style}"
+
+            if style_match:
+                start, end = style_match.span()
+                tag = f'{tag[:start]}style="{merged_style}"{tag[end:]}'
+            else:
+                closing = "/>" if tag.endswith("/>") else ">"
+                body = tag[:-2] if tag.endswith("/>") else tag[:-1]
+                tag = f'{body} style="{merged_style}"{closing}'
+
+            def _clean_class_attr(class_match: re.Match) -> str:
+                raw_classes = class_match.group(2)
+                classes = [c.strip() for c in re.split(r"\s+", raw_classes) if c.strip()]
+                classes = [c for c in classes if _normalize_text(c) != "note-float-left"]
+                if classes:
+                    return f' class="{" ".join(classes)}"'
+                return ""
+
+            tag = re.sub(
+                r"""\sclass\s*=\s*(['"])(.*?)\1""",
+                _clean_class_attr,
+                tag,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+
+            # Önceki bozuk dönüşümlerden kalan yalın note-float-left kalıntılarını temizle.
+            tag = re.sub(r"""\s*=\s*(['"])note-float-left\1""", "", tag, flags=re.IGNORECASE)
+            tag = re.sub(r"""note-float-left""", "", tag, flags=re.IGNORECASE)
+            tag = re.sub(r"""""\s*(?=/?>)""", '"', tag)
+            tag = re.sub(r"""\s{2,}""", " ", tag)
+
+            return tag
+
+        return re.sub(r"<img\b[^>]*>", _replacer, text, flags=re.IGNORECASE)
+
+    def _normalize_description_html(self, description: str) -> str:
+        text = str(description or "").strip()
+        if not text:
+            return text
+        text = self._normalize_description_images(text)
+        text = re.sub(
+            r"(<p>\s*<img\b[^>]*>)\s*(?:<strong>\s*)?(?:<br\s*/?>\s*)+(?:</strong>\s*)?\s*(</p>)",
+            r"\1\2",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        # Truncate scriptinin etiketi bozmasını engellemek için boş satırları azalt.
+        text = re.sub(
+            r"<p>\s*(?:<strong>\s*)?(?:<br\s*/?>\s*)+(?:</strong>\s*)?</p>",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r"<p>\s*</p>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"(?:\s*<br\s*/?>\s*){3,}", "<br><br>", text, flags=re.IGNORECASE)
+
+        # Storefront tarafinda details/summary bazen bozuldugu icin bu etiketleri duzlestir.
+        text = re.sub(
+            r"<details\b[^>]*>\s*<summary\b[^>]*>.*?</summary>\s*<div\b[^>]*>(.*?)</div>\s*</details>",
+            r"\1",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        text = re.sub(r"</?details\b[^>]*>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"</?summary\b[^>]*>", "", text, flags=re.IGNORECASE)
+        text = re.sub(
+            r"""<span\b[^>]*\bid\s*=\s*(['"])show-all-description\1[^>]*>.*?</span>""",
+            "",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        image_block_re = re.compile(
+            r"^\s*<p>\s*<img\b[^>]*>(?:\s*(?:<strong>\s*)?(?:<br\s*/?>\s*)+(?:</strong>\s*)?)*\s*</p>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        image_blocks: List[str] = []
+        remaining = text
+        while True:
+            match = image_block_re.match(remaining)
+            if not match:
+                break
+            image_blocks.append(match.group(0).strip())
+            remaining = remaining[match.end() :].lstrip()
+
+        if image_blocks:
+            text = "".join(image_blocks) + (remaining if remaining else "")
+
+        return text.strip()
+
     def _description_has_fit_guide(self, description: str) -> bool:
         text = str(description or "")
         if not text.strip():
@@ -917,35 +1196,13 @@ class IkasAutomationRunner:
     def _build_fallback_description(
         self, product: ProductCandidate, signals: ProductSignals
     ) -> str:
-        brand = str(product.brand or "Bu").strip()
-        model = str(product.model or "").strip()
-        variants = self._list_variant_labels(product)
-
-        descriptor_parts = []
-        if signals.is_polarized:
-            descriptor_parts.append("polarize cam desteği")
-        if signals.is_child:
-            descriptor_parts.append("çocuk kullanımına uygun yapı")
-
-        feature_text = "standart güneş koruma özellikleri"
-        if descriptor_parts:
-            feature_text = " ve ".join(descriptor_parts)
-
-        model_text = f" {model}" if model else ""
-        variant_line = "Farklı renk varyantları mevcuttur."
-        if variants:
-            variant_line = "Varyant seçenekleri: " + ", ".join(variants) + "."
-
-        return (
-            f"<p>🕶️ <strong>{brand}{model_text} Güneş Gözlüğü</strong>, modern çizgileri ve günlük kullanıma uygun yapısıyla "
-            "stil ile işlevselliği bir araya getirir. Şehir hayatında, sürüşte veya tatilde konforlu bir kullanım sunar.</p>"
-            f"<p>☀️ <strong>Koruma ve Performans</strong><br>{feature_text.capitalize()} sayesinde güneşli ortamlarda daha rahat bir görüş "
-            "deneyimi hedeflenir. Lens ve çerçeve dengesi uzun süreli kullanımda göz ve yüz konforunu destekler.</p>"
-            f"<p>✨ <strong>Tasarım ve Konfor</strong><br>Hafif ve dengeli yapı, burun ve kulak bölgesinde baskıyı azaltmaya yardımcı olur. "
-            "Ergonomik form, gün boyu kullanımda daha stabil bir duruş sağlar.</p>"
-            f"<p>🎨 <strong>Varyant Bilgisi</strong><br>{variant_line}</p>"
-            "<p>📏 <strong>Ölçü ve Uyum</strong><br>Doğru ölçü seçimi; hem estetik görünüm hem de optimum kullanım deneyimi için önemlidir. "
-            "Yüz tipinize uygun seçimi yaparak üründen maksimum verim alabilirsiniz.</p>"
+        return build_brand_specific_description(
+            product_name=product.name,
+            brand=product.brand,
+            model=product.model,
+            variant_labels=self._list_variant_labels(product),
+            is_child=signals.is_child,
+            is_polarized=signals.is_polarized,
         )
 
     def _build_meta_description(
@@ -1078,7 +1335,8 @@ class IkasAutomationRunner:
             ai_text = self._generate_description_with_openai(product, signals)
             if ai_text:
                 self._log(f"AI aciklama kullanildi (OpenAI): {product.name}")
-                return ai_text
+                if len(self._strip_html_tags(ai_text)) >= 140:
+                    return ensure_permanent_description_images(ai_text)
         except Exception as exc:
             self._log(f"WARN: OpenAI aciklama hatasi ({product.name}): {exc}")
 
@@ -1086,7 +1344,8 @@ class IkasAutomationRunner:
             ai_text = self._generate_description_with_gemini(product, signals)
             if ai_text:
                 self._log(f"AI aciklama kullanildi (Gemini): {product.name}")
-                return ai_text
+                if len(self._strip_html_tags(ai_text)) >= 140:
+                    return ensure_permanent_description_images(ai_text)
         except Exception as exc:
             self._log(f"WARN: Gemini aciklama hatasi ({product.name}): {exc}")
 
@@ -1136,6 +1395,11 @@ class IkasAutomationRunner:
             if len(clean_description) >= 60
             else self._generate_description(product, signals)
         )
+        description = ensure_permanent_description_images(
+            description,
+            width_px=self.description_image_width_px,
+        )
+        description = self._normalize_description_html(description)
 
         taxonomy_id = (
             str((latest or {}).get("googleTaxonomyId") or "").strip()
@@ -1147,6 +1411,13 @@ class IkasAutomationRunner:
             "id": product_id,
             "salesChannels": sales_channels,
             "description": description,
+            "translations": [
+                {
+                    "locale": "tr",
+                    "name": product.name,
+                    "description": description,
+                }
+            ],
             "googleTaxonomyId": taxonomy_id,
             "metaData": {
                 "pageTitle": product.name,
