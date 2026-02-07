@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Kepekçi Optik - Studio & İkas Manager
 Ana GUI uygulaması.
@@ -25,6 +25,7 @@ from net import create_session, request_with_retry, NetworkError
 from wiro import run_nano_banana, validate_api_key, WiroError
 from studio import apply_studio_effect, process_with_failure_policy, validate_image
 from ikas import normalize_variant, validate_excel_columns, UploadReport, find_image_for_variant
+from ikas_automation import IkasAutomationRunner, AutomationError
 from description import generate_product_description
 
 # --- KONFİGÜRASYON VE SABİTLER ---
@@ -587,6 +588,84 @@ class IkasPage(tk.Frame):
         subheader = ttk.Label(self, text="Toplu ürün oluşturma ve görsel yükleme.", style="SubHeader.TLabel")
         subheader.pack(anchor="w", pady=(0, 20))
 
+        # Step 0: Full Automation
+        step0_frame = tk.Frame(self, bg=COLOR_SECONDARY, padx=15, pady=15)
+        step0_frame.pack(fill=tk.X, pady=10)
+
+        lbl_step0 = tk.Label(
+            step0_frame,
+            text="ADIM 0: Tam Otomasyon",
+            bg=COLOR_SECONDARY,
+            fg=COLOR_ACCENT,
+            font=("Segoe UI", 12, "bold"),
+        )
+        lbl_step0.pack(anchor="w")
+
+        desc_step0 = tk.Label(
+            step0_frame,
+            text="Fiyat kural dosyasi + kanal secimi ile urun olusturma, varyant upsert ve gorsel yukleme tek adimda calisir.",
+            bg=COLOR_SECONDARY,
+            fg="#aaaaaa",
+            justify="left",
+            wraplength=820,
+        )
+        desc_step0.pack(anchor="w", pady=(5, 10))
+
+        self.price_rules_path = tk.StringVar()
+        price_row = tk.Frame(step0_frame, bg=COLOR_SECONDARY)
+        price_row.pack(fill=tk.X, pady=5)
+
+        entry_price = tk.Entry(price_row, textvariable=self.price_rules_path, bg="#555", fg="white", bd=0)
+        entry_price.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5, padx=(0, 10))
+
+        btn_browse_price = tk.Button(
+            price_row,
+            text="Fiyat Excel Sec...",
+            command=self._browse_price_rules,
+            bg="#444",
+            fg="white",
+            bd=0,
+            padx=10,
+        )
+        btn_browse_price.pack(side=tk.RIGHT)
+
+        channel_row = tk.Frame(step0_frame, bg=COLOR_SECONDARY)
+        channel_row.pack(fill=tk.X, pady=(5, 0))
+
+        self.var_channel_storefront = tk.BooleanVar(value=True)
+        self.var_channel_trendyol = tk.BooleanVar(value=False)
+
+        chk_storefront = tk.Checkbutton(
+            channel_row,
+            text="Storefront (VISIBLE)",
+            variable=self.var_channel_storefront,
+            bg=COLOR_SECONDARY,
+            fg=COLOR_FG,
+            selectcolor=COLOR_BG,
+            activebackground=COLOR_SECONDARY,
+            activeforeground=COLOR_FG,
+        )
+        chk_storefront.pack(side=tk.LEFT, padx=(0, 20))
+
+        chk_trendyol = tk.Checkbutton(
+            channel_row,
+            text="Trendyol (PASSIVE)",
+            variable=self.var_channel_trendyol,
+            bg=COLOR_SECONDARY,
+            fg=COLOR_FG,
+            selectcolor=COLOR_BG,
+            activebackground=COLOR_SECONDARY,
+            activeforeground=COLOR_FG,
+        )
+        chk_trendyol.pack(side=tk.LEFT)
+
+        self.btn_full_automation = ttk.Button(
+            step0_frame,
+            text="Tam Otomasyonu Baslat",
+            command=self._start_full_automation,
+        )
+        self.btn_full_automation.pack(fill=tk.X, pady=(10, 0))
+
         # Step 1: Generate Excel
         step1_frame = tk.Frame(self, bg=COLOR_SECONDARY, padx=15, pady=15)
         step1_frame.pack(fill=tk.X, pady=10)
@@ -629,12 +708,123 @@ class IkasPage(tk.Frame):
         self.log_text = tk.Text(self, height=8, bg=COLOR_BG, fg="#aaaaaa", bd=0, font=("Consolas", 8), state="disabled")
         self.log_text.pack(side=tk.BOTTOM, fill=tk.BOTH, pady=10)
 
+        self._load_automation_defaults()
+
     def _log(self, msg):
         self.log_text.config(state="normal")
         self.log_text.insert(tk.END, f"{msg}\n")
         self.log_text.see(tk.END)
         self.log_text.config(state="disabled")
         self.update_idletasks()
+
+    def _load_automation_defaults(self):
+        try:
+            config = load_config()
+            self.price_rules_path.set(config.get("ikas_price_rules_file", ""))
+            defaults = config.get("ikas_sales_channel_defaults", {}) or {}
+            self.var_channel_storefront.set(bool(defaults.get("storefront", True)))
+            self.var_channel_trendyol.set(bool(defaults.get("trendyol", False)))
+        except Exception as e:
+            self._log(f"⚠️ Tam otomasyon varsayilanlari yuklenemedi: {e}")
+
+    def _save_automation_defaults(self):
+        try:
+            data = {}
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            data["ikas_price_rules_file"] = self.price_rules_path.get().strip()
+            data["ikas_sales_channel_defaults"] = {
+                "storefront": bool(self.var_channel_storefront.get()),
+                "trendyol": bool(self.var_channel_trendyol.get()),
+            }
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self._log(f"⚠️ Varsayilanlar kaydedilemedi: {e}")
+
+    def _browse_price_rules(self):
+        path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
+        if path:
+            self.price_rules_path.set(path)
+
+    def _start_full_automation(self):
+        price_file = self.price_rules_path.get().strip()
+        if not price_file:
+            messagebox.showwarning("Uyarı", "Lütfen fiyat kural dosyasını seçin.")
+            return
+        if not os.path.exists(price_file):
+            messagebox.showerror("Hata", f"Fiyat dosyası bulunamadı:\n{price_file}")
+            return
+
+        channel_preferences = {
+            "storefront": bool(self.var_channel_storefront.get()),
+            "trendyol": bool(self.var_channel_trendyol.get()),
+        }
+        if not channel_preferences["storefront"] and not channel_preferences["trendyol"]:
+            messagebox.showwarning("Uyarı", "En az bir satış kanalı seçmelisiniz.")
+            return
+
+        self._save_automation_defaults()
+        threading.Thread(
+            target=self._full_automation_logic,
+            args=(price_file, channel_preferences),
+            daemon=True,
+        ).start()
+
+    def _full_automation_logic(self, price_file, channel_preferences):
+        self._log("🚀 Tam otomasyon başlatılıyor...")
+        try:
+            config = load_config()
+            runner = IkasAutomationRunner(
+                config=config,
+                price_rules_path=price_file,
+                channel_preferences=channel_preferences,
+                logger=self._log,
+            )
+            result = runner.run(output_dir="output")
+            summary = result.get("summary", {})
+            report_path = result.get("report_path", "")
+
+            self._log("✅ Tam otomasyon tamamlandı.")
+            self._log(
+                "Özet => "
+                f"Toplam: {summary.get('total_products', 0)} | "
+                f"Oluşturulan: {summary.get('created_products', 0)} | "
+                f"Güncellenen: {summary.get('updated_products', 0)} | "
+                f"Atlanan: {summary.get('skipped_products', 0)} | "
+                f"Hata: {summary.get('failed_products', 0)}"
+            )
+            self._log(
+                "Varyant/Görsel => "
+                f"Yüklenen görsel: {summary.get('uploaded_images', 0)} | "
+                f"Görseli vardı (skip): {summary.get('skipped_has_images', 0)} | "
+                f"Varyant hatası: {summary.get('variant_failures', 0)}"
+            )
+
+            if report_path:
+                self._log(f"📄 Rapor: {report_path}")
+
+            failed_total = int(summary.get("failed_products", 0)) + int(summary.get("variant_failures", 0))
+            if failed_total > 0:
+                messagebox.showwarning(
+                    "Tam Otomasyon Bitti",
+                    "İşlem tamamlandı ancak bazı hatalar var.\n"
+                    f"Rapor dosyası:\n{report_path}",
+                )
+            else:
+                messagebox.showinfo(
+                    "Tam Otomasyon Başarılı",
+                    "Tüm işlem başarıyla tamamlandı.\n"
+                    f"Rapor dosyası:\n{report_path}",
+                )
+
+        except AutomationError as e:
+            self._log(f"❌ Tam otomasyon hatası: {e}")
+            messagebox.showerror("Tam Otomasyon Hatası", str(e))
+        except Exception as e:
+            self._log(f"❌ Beklenmeyen hata: {e}")
+            messagebox.showerror("Tam Otomasyon Hatası", str(e))
 
     def _generate_excel(self):
         import pandas as pd
@@ -1109,8 +1299,15 @@ class SettingsPage(tk.Frame):
         }
         
         try:
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(data, f, indent=4)
+            existing = {}
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+
+            existing.update(data)
+
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=4, ensure_ascii=False)
             messagebox.showinfo("Başarılı", "Ayarlar kaydedildi!")
         except Exception as e:
             messagebox.showerror("Hata", f"Kaydedilemedi: {e}")

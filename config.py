@@ -17,6 +17,12 @@ CONFIG_DEFAULTS = {
     "store_name": "",
     "client_id": "",
     "client_secret": "",
+    "ikas_mcp_token": "",
+    "ikas_price_rules_file": "",
+    "ikas_sales_channel_defaults": {
+        "storefront": True,
+        "trendyol": False
+    },
     "wiro_api_key": "",
     "ai_mode": "wiro",
     
@@ -41,6 +47,7 @@ ENV_OVERRIDES = {
     "IKAS_CLIENT_ID": "client_id",
     "IKAS_CLIENT_SECRET": "client_secret",
     "IKAS_STORE_NAME": "store_name",
+    "IKAS_MCP_TOKEN": "ikas_mcp_token",
     "WIRO_API_KEY": "wiro_api_key",
     "AI_MODE": "ai_mode"
 }
@@ -84,6 +91,7 @@ def save_config(config: dict) -> bool:
     # Kaydedilecek alanlar (UI'dan gelen)
     ui_fields = [
         "store_name", "client_id", "client_secret", 
+        "ikas_mcp_token", "ikas_price_rules_file", "ikas_sales_channel_defaults",
         "wiro_api_key", "ai_mode",
         "gemini_api_key", "openai_api_key", "custom_api_url"
     ]

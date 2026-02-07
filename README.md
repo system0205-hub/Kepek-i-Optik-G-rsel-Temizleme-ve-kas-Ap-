@@ -1,52 +1,63 @@
-# 🔬 Kepekçi Optik - Studio & İkas Manager
+﻿# Kepekci Optik - Studio ve Ikas Manager
 
-Bu yazılım, Kepekçi Optik için özel olarak geliştirilmiş yapay zeka destekli bir ürün görseli temizleme ve e-ticaret (İkas) entegrasyon sistemidir.
+Bu yazilim, Kepekci Optik icin gelistirilmis gorsel temizleme ve Ikas otomasyon uygulamasidir.
 
-## 🚀 Özellikler
+## Ozellikler
 
-1.  **AI Stüdyo Modu:**
-    *   Ürün görsellerinin arka planını %100 otomatik temizler.
-    *   Gerçekçi stüdyo gölgeleri ve beyaz fon ekler.
-    *   **InSPyReNet (SOTA)** ve **Rembg** yapay zeka modellerini kullanır.
-    *   Alt klasörlerdeki görselleri otomatik bulup işler.
+1. Studio Modu
+- Gorsellerin arka planini otomatik temizler.
+- Beyaz fon ve studio etkisi uygular.
+- Giris klasorundeki alt klasorleri otomatik tarar.
 
-2.  **İkas Hibrit Entegrasyon:**
-    *   **Excel Editörü:** Ürünleri İkas'a yüklemeden önce tablo halinde görüntüler ve düzenlemenizi sağlar.
-    *   **Varyant Tanıma:** Klasör isimlerinden renk kodlarını otomatik algılar (örn: "Model C01" -> "C01").
-    *   **Otomatik Yükleme:** İkas'tan alınan export dosyasını kullanarak görselleri doğru varyantlara yükler.
+2. Ikas Entegrasyonu
+- Excel olusturma ve duzenleme akisi.
+- Varyant bazli gorsel yukleme.
+- Yeni: Tam otomasyon (urun olusturma + varyant upsert + gorsel yukleme).
 
-## 🛠️ Kurulum ve Başlatma
+## Baslatma
 
-Bu proje taşınabilir bir Python ortamı (`venv_ai`) ile gelir. Kurulum gerektirmez.
+1. `BASLAT.bat` dosyasini calistirin.
+2. Alternatif: `venv_ai/Scripts/python gui_app.py`
 
-1.  Masaüstündeki **`BAŞLAT.bat`** dosyasına çift tıklayın.
-2.  İlk açılışta yapay zeka modelleri ineceğinden 1-2 dakika beklemeniz gerekebilir. Sonraki açılışlar anlıktır.
+## Kullanim
 
-*(Eğer `BAŞLAT.bat` çalışmazsa `folder/venv_ai/Scripts/python gui_app.py` komutunu kullanabilirsiniz.)*
+### 1. Studio (Gorsel Temizleme)
+- Giris klasoru olarak `input` klasorunu secin.
+- Islemi baslatin.
+- Cikti dosyalari `output` klasorune yazilir.
 
-## 📖 Kullanım Kılavuzu
+### 2. Ikas Entegrasyonu
 
-### 1. Stüdyo (Görsel Temizleme)
-*   **Giriş Klasörü:** Ham fotoğrafların olduğu klasörü seçin (`input`).
-*   **Model:** Genellikle "Otomatik" veya "InSPyReNet" seçili kalsın.
-*   **Başlat:** `output` klasörüne temizlenmiş görselleri kaydeder.
+#### Adim 0: Tam Otomasyon (Yeni)
+- Fiyat kural dosyasi secin (`.xlsx`).
+- Kanal secimi yapin (`Storefront`, `Trendyol`).
+- `Tam Otomasyonu Baslat` butonuna basin.
+- Sistem tek adimda su islemleri yapar:
+  `output` tarama -> fiyat eslestirme -> create/upsert -> gorsel yukleme -> rapor.
 
-### 2. İkas Entegrasyonu
-*   **Adım 1: Excel Oluştur**
-    *   Butona basın. `output` klasöründeki ürünler listelenir.
-    *   Açılan pencerede fiyatları, isimleri veya stokları düzenleyin.
-    *   Yeni ürün eklemek için **"➕ Satır Ekle"** butonunu kullanın.
-    *   **"KAYDET ve OLUŞTUR"** dediğinizde `ikas_import_new_products.xlsx` dosyası oluşur.
-    *   Bu dosyayı İkas paneline yükleyin.
-*   **Adım 2: Görsel Yükleme**
-    *   İkas panelinden ürünleri "Dışa Aktar" (Excel) yapın.
-    *   Uygulamada **"Görsel Yükle (Excel Seç)"** butonuna basarak bu indirdiğiniz dosyayı seçin.
-    *   Sistem, ürünleri isimlerinden tanıyıp fotoğraflarını yükleyecektir.
+Fiyat dosyasi kolonlari:
+- `Marka`
+- `Model`
+- `Satis Fiyati`
+- `Indirimli Fiyati`
+- `Alis Fiyati`
 
-### ⚙️ Ayarlar
-*   **API Anahtarları:** İkas entegrasyonu için Client ID ve Secret değerlerini buradan girebilirsiniz.
-*   **AI Modu:** Bilgisayarınızın gücüne göre "Local" veya paralı API'leri (Gemini/OpenAI) seçebilirsiniz.
+Notlar:
+- `Model` bos ise marka fallback kurali uygulanir.
+- Fiyat eslesmeyen urunler atlanir ve loga yazilir.
+- Mevcut varyantta gorsel varsa tekrar yuklenmez.
 
----
-**Geliştirici Notu:**
-Python 3.10+ uyumludur. `onnxruntime` ve `transparent-background` kütüphanelerine bağımlıdır.
+#### Adim 1: Excel Olustur
+- `output` klasorundeki urunlerden Ikas import dosyasi olusturur.
+- Tablo ekranda duzenlenebilir.
+
+#### Adim 2: Gorsel Yukle
+- Ikas panelinden aldiginiz ID'li export Excel dosyasini secin.
+- Sistem varyant ID'lerine gore gorselleri yukler.
+
+## Ayarlar
+- Ikas `client_id`, `client_secret`, `store_name` degerlerini girin.
+- AI modunu ihtiyaca gore secin.
+
+## Not
+- Python 3.10+ ile calisir.
